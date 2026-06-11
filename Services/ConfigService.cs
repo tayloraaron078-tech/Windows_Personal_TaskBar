@@ -19,7 +19,7 @@ public class ConfigService
     // ── Paths ───────────────────────────────────────────────────────────────
 
     private static readonly string BaseDir =
-        System.IO.Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".";
+        System.IO.Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
 
     public static readonly string ConfigPath  = System.IO.Path.Combine(BaseDir, "config.toml");
     public static readonly string EntriesPath = System.IO.Path.Combine(BaseDir, "entries.toml");

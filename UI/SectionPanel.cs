@@ -347,7 +347,7 @@ public class SectionPanel : Panel
     private void ChangeAccentColor()
     {
         using var dlg = new ColorDialog { Color = TryParseColor(SectionModel.AccentColor) };
-        if (_showDialog(dlg) == DialogResult.OK)
+        if (dlg.ShowDialog() == DialogResult.OK)
         {
             SectionModel.AccentColor = ColorTranslator.ToHtml(dlg.Color);
             _configService.SaveEntries();

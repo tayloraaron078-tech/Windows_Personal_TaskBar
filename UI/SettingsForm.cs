@@ -158,7 +158,8 @@ public class SettingsForm : Form
 
         if (enable)
         {
-            var exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+            // Environment.ProcessPath is the actual .exe path even in single-file publish
+            var exePath = Environment.ProcessPath ?? AppContext.BaseDirectory;
             key.SetValue(appName, $"\"{exePath}\"");
         }
         else
@@ -172,7 +173,7 @@ public class SettingsForm : Form
     private static void OpenQuickstart()
     {
         var path = Path.Combine(
-            Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) ?? ".",
+            Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory),
             "Docs", "QUICKSTART.md");
 
         if (!File.Exists(path))

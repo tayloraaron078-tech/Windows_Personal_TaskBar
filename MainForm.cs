@@ -265,6 +265,7 @@ public class MainForm : Form
 
         // Clamp saved size so a stale full-screen value doesn't make the bar unusable.
         // Docked positions override these anyway via ApplyDock below.
+        var wa    = screen.WorkingArea;
         int safeW = wc.Dock is "top" or "bottom" ? wa.Width  : Math.Clamp(wc.Width,  150, wa.Width  / 2);
         int safeH = wc.Dock is "left" or "right"  ? wa.Height : Math.Clamp(wc.Height, 50,  wa.Height / 2);
         Size = new Size(safeW, safeH);

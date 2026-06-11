@@ -42,13 +42,18 @@ public class MainForm : Form
     private readonly Button _btnSearch;
     private readonly Button _btnAddSection;
 
-    // ── Drag / dock state ───────────────────────────────────────────────────
+    // ── Drag / dock / resize state ──────────────────────────────────────────
 
-    private const int DockSnapThreshold = 20; // pixels from edge to trigger snap
+    private const int DockSnapThreshold = 20; // pixels from screen edge to trigger snap
+    private const int ResizeBorder      = 6;  // pixels from form edge that count as resize grip
 
     private bool  _dragging;
     private Point _dragOrigin;            // mouse position when drag started
     private Point _formOrigin;            // form position when drag started
+
+    // Default floating size used when undocking from a full-edge dock
+    private Size DefaultFloatingSize => new(Math.Max(200, _configService.Config.Window.IconSize * 5),
+                                            Math.Max(80,  _configService.Config.Window.IconSize * 2));
 
     // ── Constructor ─────────────────────────────────────────────────────────
 
@@ -105,13 +110,16 @@ public class MainForm : Form
         _searchOverlay.FilterChanged   += OnSearchFilter;
 
         // ── Sections host ─────────────────────────────────────────────────
+        // TopDown flow so sections stack vertically regardless of form width.
+        // AutoScroll on the outer form handles overflow when content is taller than the window.
 
         _sectionsHost = new FlowLayoutPanel
         {
             Dock          = DockStyle.Fill,
-            AutoSize      = true,
-            AutoSizeMode  = AutoSizeMode.GrowAndShrink,
-            WrapContents  = true,
+            AutoSize      = false,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents  = false,
+            AutoScroll    = true,
             BackColor     = SystemColors.Control,
         };
 
@@ -146,10 +154,54 @@ public class MainForm : Form
         _iconService.Preload(_configService.Sections, _configService.Config.Window.IconSize);
     }
 
-    // ── WndProc override (hotkeys + single-instance activation) ────────────
+    // ── WndProc override (hotkeys + resize + single-instance activation) ────
+
+    // WM_NCHITTEST return values for resize edges
+    private const int WM_NCHITTEST   = 0x0084;
+    private const int HTLEFT         = 10;
+    private const int HTRIGHT        = 11;
+    private const int HTTOP          = 12;
+    private const int HTTOPLEFT      = 13;
+    private const int HTTOPRIGHT     = 14;
+    private const int HTBOTTOM       = 15;
+    private const int HTBOTTOMLEFT   = 16;
+    private const int HTBOTTOMRIGHT  = 17;
+    private const int HTCLIENT       = 1;
 
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == WM_NCHITTEST)
+        {
+            // Allow the user to resize the borderless window by dragging its edges.
+            // When docked, only the inward edge is a resize grip so the window doesn't accidentally undock.
+            var cursor  = PointToClient(new Point(m.LParam.ToInt32() & 0xFFFF,
+                                                   (m.LParam.ToInt32() >> 16) & 0xFFFF));
+            bool left   = cursor.X <= ResizeBorder;
+            bool right  = cursor.X >= ClientSize.Width  - ResizeBorder;
+            bool top    = cursor.Y <= ResizeBorder;
+            bool bottom = cursor.Y >= ClientSize.Height - ResizeBorder;
+
+            var dock = _configService.Config.Window.Dock;
+
+            // Suppress edges that are glued to the screen
+            if (dock == "top")    top    = false;
+            if (dock == "bottom") bottom = false;
+            if (dock == "left")   left   = false;
+            if (dock == "right")  right  = false;
+
+            int hit = HTCLIENT;
+            if (top    && left)  hit = HTTOPLEFT;
+            else if (top  && right) hit = HTTOPRIGHT;
+            else if (bottom && left)  hit = HTBOTTOMLEFT;
+            else if (bottom && right) hit = HTBOTTOMRIGHT;
+            else if (left)   hit = HTLEFT;
+            else if (right)  hit = HTRIGHT;
+            else if (top)    hit = HTTOP;
+            else if (bottom) hit = HTBOTTOM;
+
+            if (hit != HTCLIENT) { m.Result = new IntPtr(hit); return; }
+        }
+
         if (m.Msg == NativeMethods.WM_HOTKEY)
         {
             _hotkeyService?.HandleHotkey(m.WParam.ToInt32());
@@ -289,11 +341,21 @@ public class MainForm : Form
     private void OnDragMouseDown(object? sender, MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Left) return;
+
+        var prevDock = _configService.Config.Window.Dock;
+        _configService.Config.Window.Dock = "none";
+
+        // When leaving a full-edge dock the window is screen-width or screen-height.
+        // Snap it back to a sensible floating size so the user isn't stuck with a
+        // full-screen bar they can't resize.
+        if (prevDock == "top" || prevDock == "bottom")
+            Size = new Size(DefaultFloatingSize.Width, Height);   // keep height, reset width
+        else if (prevDock == "left" || prevDock == "right")
+            Size = new Size(Width, DefaultFloatingSize.Height);   // keep width, reset height
+
         _dragging   = true;
         _dragOrigin = Control.MousePosition;
         _formOrigin = Location;
-        // Undock when dragging starts
-        _configService.Config.Window.Dock = "none";
     }
 
     private void OnDragMouseMove(object? sender, MouseEventArgs e)
@@ -318,8 +380,17 @@ public class MainForm : Form
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
+        // Keep all section panels as wide as the available client area
+        int w = SectionWidth();
+        foreach (var sp in _sectionPanels)
+            sp.SetWidth(w);
         SaveWindowGeometry();
     }
+
+    /// <summary>Width available for section panels inside the sections host.</summary>
+    private int SectionWidth() =>
+        Math.Max(80, _sectionsHost.ClientSize.Width
+                     - (_sectionsHost.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0));
 
     // ── Sections ────────────────────────────────────────────────────────────
 
@@ -346,6 +417,7 @@ public class MainForm : Form
     {
         var panel = new SectionPanel(section, _configService, _iconService, _launchService, ShowDialogSafe);
         panel.ApplyIconSize(_configService.Config.Window.IconSize);
+        panel.SetWidth(SectionWidth());
 
         panel.CollapseAll            += (_, _) => CollapseAllSections();
         panel.ExpandAll              += (_, _) => ExpandAllSections();
@@ -495,8 +567,12 @@ public class MainForm : Form
     private void ApplyIconSize(int size)
     {
         _configService.Config.Window.IconSize = size;
+        int w = SectionWidth();
         foreach (var sp in _sectionPanels)
+        {
             sp.ApplyIconSize(size);
+            sp.SetWidth(w);
+        }
         _configService.SaveConfig();
     }
 

@@ -62,8 +62,10 @@ public class SectionPanel : Panel
 
         BackColor    = SystemColors.Control;
         ForeColor    = SystemColors.ControlText;
-        AutoSize     = true;
-        AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        // Do NOT use AutoSize here – the FlowLayoutPanel host is TopDown, so each
+        // SectionPanel must have an explicit width that fills the host.  Width is
+        // set by the caller (MainForm) via SetWidth() whenever the form resizes.
+        AutoSize     = false;
         Padding      = new Padding(0, 0, 0, 4);
 
         // ── Header panel ──────────────────────────────────────────────────
@@ -115,6 +117,26 @@ public class SectionPanel : Panel
 
     // ── Public API ──────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Called by MainForm on resize so the panel and its content fill the host width.
+    /// </summary>
+    public void SetWidth(int width)
+    {
+        Width          = Math.Max(80, width);
+        _content.Width = Width;
+        foreach (Control c in _content.Controls)
+            if (c is ScratchpadPanel sp)
+                sp.Width = Width;
+        // Height: header + content natural height
+        UpdateHeight();
+    }
+
+    private void UpdateHeight()
+    {
+        int contentH = _collapsed ? 0 : _content.PreferredSize.Height;
+        Height = _header.Height + contentH + Padding.Vertical;
+    }
+
     /// <summary>Propagates a new icon size to all child entry buttons.</summary>
     public void ApplyIconSize(int iconSize)
     {
@@ -149,6 +171,7 @@ public class SectionPanel : Panel
         }
 
         _content.ResumeLayout(true);
+        UpdateHeight();
     }
 
     public void SetDisplayMode(string mode)
@@ -211,6 +234,7 @@ public class SectionPanel : Panel
         // Simple show/hide animation: fade the content in/out
         _content.Visible = !_collapsed;
         _configService.SaveEntries();
+        UpdateHeight();
 
         // Repaint the header arrow hint
         _headerLabel.Text = SectionModel.Name + (_collapsed ? " ▶" : " ▼");

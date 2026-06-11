@@ -173,6 +173,7 @@ public class MainForm : Form
     private const int HTBOTTOMLEFT   = 16;
     private const int HTBOTTOMRIGHT  = 17;
     private const int HTCLIENT       = 1;
+    private const int HTCAPTION      = 2;
 
     protected override void WndProc(ref Message m)
     {

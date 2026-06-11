@@ -212,8 +212,8 @@ public class ConfigService
                     {
                         Name         = GetStr(et, "name",          "Entry"),
                         Type         = GetStr(et, "type",          "exe"),
-                        Path         = GetStr(et, "path",          string.Empty),
-                        IconOverride = GetStr(et, "icon_override", string.Empty),
+                        Path         = GetStr(et, "path",          string.Empty).Trim('"'),
+                        IconOverride = GetStr(et, "icon_override", string.Empty).Trim('"'),
                         LastLaunched = GetStr(et, "last_launched", string.Empty),
                     });
                 }

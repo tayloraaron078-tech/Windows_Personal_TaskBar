@@ -83,6 +83,13 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool DestroyIcon(IntPtr hIcon);
 
+    // Renders an HICON correctly respecting AND/XOR masks — use instead of Icon.ToBitmap()
+    [DllImport("user32.dll")]
+    public static extern bool DrawIconEx(IntPtr hdc, int xLeft, int yTop, IntPtr hIcon,
+        int cxWidth, int cyHeight, uint istepIfAniCur, IntPtr hbrFlickerFreeDraw, uint diFlags);
+
+    public const uint DI_NORMAL = 0x0003;
+
     // ── Single-instance activation broadcast ───────────────────────────────
 
     private const string ActivateMessageName = "Personal_TaskBar_Activate";

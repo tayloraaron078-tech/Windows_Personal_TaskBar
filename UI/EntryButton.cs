@@ -174,16 +174,23 @@ public class EntryButton : Panel
 
     private void WireEvents()
     {
-        MouseEnter  += (_, _) => { _hovered = true;  Invalidate(); };
-        MouseLeave  += (_, _) => { _hovered = false; _pressed = false; Invalidate(); };
-        MouseDown   += (_, me) => { if (me.Button == MouseButtons.Left) { _pressed = true; Invalidate(); } };
-        MouseUp     += (_, me) => { if (me.Button == MouseButtons.Left) { _pressed = false; Invalidate(); } };
+        MouseEnter += (_, _) => { _hovered = true;  Invalidate(); };
+        MouseLeave += (_, _) => { _hovered = false; _pressed = false; Invalidate(); };
+        MouseDown  += (_, me) => { if (me.Button == MouseButtons.Left) { _pressed = true;  Invalidate(); } };
 
-        Click += (_, _) =>
+        // Use MouseUp + _hovered for launch instead of Click.
+        // Panel.Click is unreliable when the FlowLayoutPanel parent also has MouseDown
+        // subscribed — clicking the 1-2px gap around the button triggers the parent's
+        // drag handler which swallows the up-event before Click fires on the button.
+        MouseUp += (_, me) =>
         {
-            _launchService.Launch(EntryModel);
+            _pressed = false;
             Invalidate();
-            LaunchRequested?.Invoke(this, EventArgs.Empty);
+            if (me.Button == MouseButtons.Left && _hovered)
+            {
+                _launchService.Launch(EntryModel);
+                LaunchRequested?.Invoke(this, EventArgs.Empty);
+            }
         };
 
         var tip = new ToolTip { ShowAlways = true };

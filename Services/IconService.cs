@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Windows.Forms;
 using Personal_TaskBar.Models;
@@ -8,22 +9,20 @@ using Personal_TaskBar.Models;
 namespace Personal_TaskBar.Services;
 
 /// <summary>
-/// Extracts icons for entries and caches them in memory so repeated renders
-/// never re-hit the filesystem or shell.
-/// Cache key = (path, iconSize).
+/// Extracts icons for entries and caches them in memory.
+/// Cache key = (iconOverride | expandedPath | size).
+///
+/// Root cause of the "no icon" bug that was here previously:
+///   Icon.ToBitmap() does NOT correctly handle the AND mask used by 32x32 legacy
+///   icons, producing a fully-transparent (invisible) bitmap.  All HICON → Bitmap
+///   conversions now go through HIconToBitmap() which uses DrawIconEx.
 /// </summary>
 public class IconService : IDisposable
 {
-    // ── In-memory cache ─────────────────────────────────────────────────────
-
     private readonly Dictionary<string, Image> _cache = new(StringComparer.OrdinalIgnoreCase);
 
-    // ── Public API ──────────────────────────────────────────────────────────
+    // ── Public API ────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Returns a cached icon image for the entry at the requested size.
-    /// Falls back through: custom override → exe extraction → shell icon → generic.
-    /// </summary>
     public Image GetIcon(Entry entry, int size)
     {
         var expandedPath = Environment.ExpandEnvironmentVariables(entry.Path).Trim('"');
@@ -37,7 +36,6 @@ public class IconService : IDisposable
         return img;
     }
 
-    /// <summary>Pre-warms the cache for all entries in the provided sections.</summary>
     public void Preload(IEnumerable<Section> sections, int size)
     {
         foreach (var sec in sections)
@@ -45,68 +43,56 @@ public class IconService : IDisposable
                 GetIcon(entry, size);
     }
 
-    // ── Icon loading logic ──────────────────────────────────────────────────
+    // ── Loading ───────────────────────────────────────────────────────────────
 
     private Image LoadIcon(Entry entry, string expandedPath, int size)
     {
-        // 1. Custom icon override (.ico or .png)
+        // 1. Custom icon override (.ico / .png / .bmp / .jpg)
         if (!string.IsNullOrEmpty(entry.IconOverride))
         {
             var overridePath = Environment.ExpandEnvironmentVariables(entry.IconOverride).Trim('"');
-            try
-            {
-                var ext = Path.GetExtension(overridePath).ToLower();
-                if (ext == ".ico")
-                {
-                    using var ico = new Icon(overridePath, size, size);
-                    return new Bitmap(ico.ToBitmap(), size, size);
-                }
-                else if (ext == ".png" || ext == ".bmp" || ext == ".jpg" || ext == ".jpeg")
-                {
-                    using var raw = Image.FromFile(overridePath);
-                    return new Bitmap(raw, size, size);
-                }
-            }
-            catch { /* fall through */ }
-        }
-
-        // 2. For .exe, use ExtractIcon from shell32
-        if (entry.Type == "exe" && File.Exists(expandedPath))
-        {
-            var img = ExtractExeIcon(expandedPath, size);
+            var img = TryLoadOverride(overridePath, size);
             if (img != null) return img;
         }
 
-        // 3. Shell icon via SHGetFileInfo (handles folders, file associations, URLs)
+        // 2. Shell icon via SHGetImageList (proper 48x48 / 256x256 quality)
         {
             var img = GetShellIcon(expandedPath, entry.Type, size);
             if (img != null) return img;
         }
 
-        // 4. Absolute fallback: system generic file icon
-        return SystemIcons.WinLogo.ToBitmap();
+        // 3. Absolute fallback
+        return HIconToBitmap(SystemIcons.WinLogo.Handle, size);
     }
 
-    private static Image? ExtractExeIcon(string exePath, int size)
-    {
-        var hIcon = NativeMethods.ExtractIcon(IntPtr.Zero, exePath, 0);
-        if (hIcon == IntPtr.Zero || hIcon == new IntPtr(1))
-            return null;
+    // ── Override loader ───────────────────────────────────────────────────────
 
+    private static Image? TryLoadOverride(string path, int size)
+    {
         try
         {
-            using var icon = Icon.FromHandle(hIcon);
-            return new Bitmap(icon.ToBitmap(), size, size);
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext == ".ico")
+            {
+                // Load .ico through HICON so DrawIconEx handles the mask correctly
+                using var ico = new Icon(path, size, size);
+                return HIconToBitmap(ico.Handle, size);
+            }
+            if (ext is ".png" or ".bmp" or ".jpg" or ".jpeg")
+            {
+                using var raw = Image.FromFile(path);
+                return new Bitmap(raw, size, size);
+            }
         }
-        finally
-        {
-            NativeMethods.DestroyIcon(hIcon);
-        }
+        catch { /* fall through */ }
+        return null;
     }
+
+    // ── Shell icon via SHGetImageList ─────────────────────────────────────────
 
     private static Image? GetShellIcon(string path, string entryType, int size)
     {
-        // Get the system image list index via SHGetFileInfo (no icon extracted yet)
+        // First, get the system image list index via SHGetFileInfo
         var shfi  = new NativeMethods.SHFILEINFO();
         uint flags = NativeMethods.SHGFI_SYSICONINDEX | NativeMethods.SHGFI_LARGEICON;
 
@@ -122,9 +108,9 @@ public class IconService : IDisposable
             ref shfi, (uint)System.Runtime.InteropServices.Marshal.SizeOf(shfi), flags);
 
         if (result == IntPtr.Zero)
-            return GetShellIconLegacy(queryPath, entryType, pathExists, size);
+            return null;
 
-        // For sizes > 32, use SHGetImageList which has 48x48 (EXTRALARGE) and 256x256 (JUMBO)
+        // Pick the image list that matches the requested size
         int shil = size >= 64 ? NativeMethods.SHIL_JUMBO
                  : size >= 36 ? NativeMethods.SHIL_EXTRALARGE
                  : size >= 24 ? NativeMethods.SHIL_LARGE
@@ -134,23 +120,24 @@ public class IconService : IDisposable
         {
             var iid = NativeMethods.IID_IImageList;
             NativeMethods.SHGetImageList(shil, ref iid, out var imageList);
-            imageList.GetIcon(shfi.iIcon, 0x0001 /* ILD_TRANSPARENT */, out var hIcon);
-            if (hIcon == IntPtr.Zero) goto legacy;
 
-            try
-            {
-                using var icon = Icon.FromHandle(hIcon);
-                return new Bitmap(icon.ToBitmap(), size, size);
-            }
+            imageList.GetIcon(shfi.iIcon, 0x0001 /* ILD_TRANSPARENT */, out var hIcon);
+            if (hIcon == IntPtr.Zero)
+                return FallbackShellIcon(queryPath, flags, pathExists, size);
+
+            try   { return HIconToBitmap(hIcon, size); }
             finally { NativeMethods.DestroyIcon(hIcon); }
         }
-        catch { /* fall through to legacy */ }
+        catch { /* SHGetImageList unavailable – fall through */ }
 
-        legacy:
-        return GetShellIconLegacy(queryPath, entryType, pathExists, size);
+        return FallbackShellIcon(queryPath, flags, pathExists, size);
     }
 
-    private static Image? GetShellIconLegacy(string path, string entryType, bool pathExists, int size)
+    /// <summary>
+    /// Legacy fallback: SHGetFileInfo with SHGFI_ICON (32x32 max, scaled up).
+    /// Used when SHGetImageList is unavailable.
+    /// </summary>
+    private static Image? FallbackShellIcon(string path, uint baseFlags, bool pathExists, int size)
     {
         var shfi  = new NativeMethods.SHFILEINFO();
         uint flags = NativeMethods.SHGFI_ICON | NativeMethods.SHGFI_LARGEICON;
@@ -161,15 +148,34 @@ public class IconService : IDisposable
 
         if (result == IntPtr.Zero || shfi.hIcon == IntPtr.Zero) return null;
 
-        try
-        {
-            using var icon = Icon.FromHandle(shfi.hIcon);
-            return new Bitmap(icon.ToBitmap(), size, size);
-        }
+        try   { return HIconToBitmap(shfi.hIcon, size); }
         finally { NativeMethods.DestroyIcon(shfi.hIcon); }
     }
 
-    // ── IDisposable ─────────────────────────────────────────────────────────
+    // ── HICON → Bitmap using DrawIconEx ──────────────────────────────────────
+
+    /// <summary>
+    /// Converts an HICON to a Bitmap using DrawIconEx.
+    /// Icon.ToBitmap() / Graphics.DrawIcon() do NOT correctly handle the AND mask
+    /// on legacy 32x32 icons — the result has alpha=0 everywhere (invisible).
+    /// DrawIconEx uses the Windows icon renderer and produces a correct ARGB bitmap.
+    /// </summary>
+    private static Bitmap HIconToBitmap(IntPtr hIcon, int size)
+    {
+        var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+        using var g = Graphics.FromImage(bmp);
+        g.Clear(Color.Transparent);
+        var hdc = g.GetHdc();
+        try
+        {
+            NativeMethods.DrawIconEx(hdc, 0, 0, hIcon, size, size, 0, IntPtr.Zero,
+                NativeMethods.DI_NORMAL);
+        }
+        finally { g.ReleaseHdc(hdc); }
+        return bmp;
+    }
+
+    // ── IDisposable ───────────────────────────────────────────────────────────
 
     public void Dispose()
     {

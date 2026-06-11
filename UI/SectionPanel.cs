@@ -54,10 +54,11 @@ public class SectionPanel : Panel
 
     // ── Events ───────────────────────────────────────────────────────────────
 
-    public event EventHandler? DataChanged;
-    public event EventHandler? CollapseAll;
-    public event EventHandler? ExpandAll;
-    public event EventHandler? RemoveSectionRequested;
+    public event EventHandler?          DataChanged;
+    public event EventHandler<Section>? EntryMovedToSection;
+    public event EventHandler?          CollapseAll;
+    public event EventHandler?          ExpandAll;
+    public event EventHandler?          RemoveSectionRequested;
 
     // Accent line height below the header
     private const int AccentH = 2;
@@ -243,7 +244,7 @@ public class SectionPanel : Panel
     {
         var btn = new EntryButton(entry, _iconService, _launchService, _configService)
         {
-            Margin = new Padding(2),
+            Margin = Padding.Empty,
         };
         btn.EditRequested             += (_, _) => OpenEditDialog(entry, btn);
         btn.RemoveRequested           += (_, _) => RemoveEntry(entry, btn);
@@ -344,7 +345,9 @@ public class SectionPanel : Panel
         if (_showDialog(dlg) == DialogResult.OK)
         {
             _configService.SaveEntries();
-            btn.Invalidate();
+            // ApplyIconSize busts the icon cache (new cache key) so the updated
+            // path / icon override is picked up immediately without restarting.
+            btn.ApplyIconSize(_iconSize, _displayMode);
             DataChanged?.Invoke(this, EventArgs.Empty);
         }
     }
@@ -368,6 +371,8 @@ public class SectionPanel : Panel
         btn.Dispose();
         _configService.SaveEntries();
         UpdateHeight();
+        // Notify MainForm so it can rebuild the target panel's UI
+        EntryMovedToSection?.Invoke(this, target);
         DataChanged?.Invoke(this, EventArgs.Empty);
     }
 

@@ -477,6 +477,16 @@ public class MainForm : Form
             _configService.SaveEntries();
             RebuildSections();
         };
+        panel.EntryMovedToSection += (_, targetSection) =>
+        {
+            // Rebuild only the target panel so the moved entry appears there immediately
+            var targetPanel = _sectionPanels.FirstOrDefault(p => p.SectionModel == targetSection);
+            if (targetPanel != null)
+            {
+                targetPanel.RebuildEntries();
+                EnableDragOn(targetPanel);
+            }
+        };
         panel.DataChanged += (_, _) => EnableDragOn(panel); // re-subscribe drag to new EntryButton panels
 
         return panel;

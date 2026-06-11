@@ -170,7 +170,7 @@ public class MainForm : Form
         // EnableDragOn is called in OnShown (after layout) so panels exist.
 
         RebuildSections();
-        _iconService.Preload(_configService.Sections, _configService.Config.Window.IconSize);
+        // Preload is deferred to OnShown so any exception is handled by Application.ThreadException
     }
 
     // ── DWM rounded corners + shadow ─────────────────────────────────────────
@@ -428,8 +428,11 @@ public class MainForm : Form
         int w = SectionWidth();
         foreach (var sp in _sectionPanels)
             sp.SetWidth(w);
-        // Re-subscribe drag to any controls that were built before the form was shown
+        // Wire drag to all controls (panels exist now; any exception is caught by ThreadException)
         EnableDragOn(this);
+        // Pre-warm the icon cache (deferred from constructor so exceptions are catchable)
+        _iconService.Preload(_configService.Sections, _configService.Config.Window.IconSize);
+        Invalidate(true);
     }
 
     private int SectionWidth()

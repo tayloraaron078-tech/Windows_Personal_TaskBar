@@ -29,6 +29,13 @@ internal static class Program
 
         ApplicationConfiguration.Initialize();
 
+        // Catch any unhandled exception on the UI thread and show it rather than silently crashing
+        Application.ThreadException += (_, ex) =>
+            MessageBox.Show($"Unhandled error:\n\n{ex.Exception.GetType().Name}: {ex.Exception.Message}\n\n{ex.Exception.StackTrace}",
+                            "Personal TaskBar – Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+
         // Enable visual styles so controls render using the current Windows theme
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);

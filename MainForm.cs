@@ -67,7 +67,7 @@ public class MainForm : Form
 
         FormBorderStyle = FormBorderStyle.None;
         TopMost         = configService.Config.Window.AlwaysOnTop;
-        ShowInTaskbar   = false;
+        ShowInTaskbar   = true;  // visible in taskbar so user can find/click the bar
         DoubleBuffered  = true;
         BackColor       = SystemColors.Control;
         ForeColor       = SystemColors.ControlText;
@@ -262,7 +262,12 @@ public class MainForm : Form
         int y = Math.Clamp(wc.Y, screen.WorkingArea.Top,  screen.WorkingArea.Bottom - wc.Height);
 
         Location = new Point(x, y);
-        Size     = new Size(Math.Max(150, wc.Width), Math.Max(50, wc.Height));
+
+        // Clamp saved size so a stale full-screen value doesn't make the bar unusable.
+        // Docked positions override these anyway via ApplyDock below.
+        int safeW = wc.Dock is "top" or "bottom" ? wa.Width  : Math.Clamp(wc.Width,  150, wa.Width  / 2);
+        int safeH = wc.Dock is "left" or "right"  ? wa.Height : Math.Clamp(wc.Height, 50,  wa.Height / 2);
+        Size = new Size(safeW, safeH);
 
         // Re-apply dock if previously docked
         if (wc.Dock != "none")
@@ -380,7 +385,10 @@ public class MainForm : Form
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        // Keep all section panels as wide as the available client area
+        // Guard: OnResize fires during RestoreWindowGeometry() which is called
+        // before _sectionsHost and _sectionPanels are assigned.
+        if (_sectionsHost == null || _sectionPanels == null) return;
+
         int w = SectionWidth();
         foreach (var sp in _sectionPanels)
             sp.SetWidth(w);

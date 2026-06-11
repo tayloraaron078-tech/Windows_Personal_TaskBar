@@ -42,18 +42,17 @@ public class MainForm : Form
     private readonly Button _btnSearch;
     private readonly Button _btnAddSection;
 
-    // ── Drag / dock / resize state ──────────────────────────────────────────
+    // ── Dock / resize state ─────────────────────────────────────────────────
 
     private const int DockSnapThreshold = 20; // pixels from screen edge to trigger snap
     private const int ResizeBorder      = 6;  // pixels from form edge that count as resize grip
 
-    private bool  _dragging;
-    private Point _dragOrigin;            // mouse position when drag started
-    private Point _formOrigin;            // form position when drag started
-
     // Default floating size used when undocking from a full-edge dock
     private Size DefaultFloatingSize => new(Math.Max(200, _configService.Config.Window.IconSize * 5),
                                             Math.Max(80,  _configService.Config.Window.IconSize * 2));
+
+    // System tray icon – gives user a way to show/exit when the window is hidden
+    private NotifyIcon? _trayIcon;
 
     // ── Constructor ─────────────────────────────────────────────────────────
 
@@ -136,15 +135,22 @@ public class MainForm : Form
         _btnSearch.Click      += (_, _) => OpenSearch();
         _btnAddSection.Click  += (_, _) => AddSection();
 
-        // Dragging by the control strip
-        _controlStrip.MouseDown += OnDragMouseDown;
-        _controlStrip.MouseMove += OnDragMouseMove;
-        _controlStrip.MouseUp   += OnDragMouseUp;
+        // ── System tray icon ──────────────────────────────────────────────
+        // Provides Show/Hide and Exit even when the main window is hidden.
 
-        // Dragging by the sections area (empty space)
-        _sectionsHost.MouseDown += OnDragMouseDown;
-        _sectionsHost.MouseMove += OnDragMouseMove;
-        _sectionsHost.MouseUp   += OnDragMouseUp;
+        var trayMenu = new ContextMenuStrip();
+        trayMenu.Items.Add("Show / Hide",  null, (_, _) => ToggleVisibility());
+        trayMenu.Items.Add(new ToolStripSeparator());
+        trayMenu.Items.Add("Exit", null, (_, _) => ExitApp());
+
+        _trayIcon = new NotifyIcon
+        {
+            Icon             = SystemIcons.Application,
+            Text             = "Personal TaskBar",
+            Visible          = true,
+            ContextMenuStrip = trayMenu,
+        };
+        _trayIcon.DoubleClick += (_, _) => ToggleVisibility();
 
         // ── Build section panels ──────────────────────────────────────────
 
@@ -172,26 +178,28 @@ public class MainForm : Form
     {
         if (m.Msg == WM_NCHITTEST)
         {
-            // Allow the user to resize the borderless window by dragging its edges.
-            // When docked, only the inward edge is a resize grip so the window doesn't accidentally undock.
-            var cursor  = PointToClient(new Point(m.LParam.ToInt32() & 0xFFFF,
-                                                   (m.LParam.ToInt32() >> 16) & 0xFFFF));
+            // Decode screen coords – use signed shorts to handle negative values on
+            // monitors to the left/above the primary.
+            int  lp     = m.LParam.ToInt32();
+            var  screen = new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
+            var  cursor = PointToClient(screen);
+
             bool left   = cursor.X <= ResizeBorder;
             bool right  = cursor.X >= ClientSize.Width  - ResizeBorder;
             bool top    = cursor.Y <= ResizeBorder;
             bool bottom = cursor.Y >= ClientSize.Height - ResizeBorder;
 
-            var dock = _configService.Config.Window.Dock;
+            var dock = _configService?.Config.Window.Dock ?? "none";
 
-            // Suppress edges that are glued to the screen
+            // Suppress resize on edges that are pinned to the screen
             if (dock == "top")    top    = false;
             if (dock == "bottom") bottom = false;
             if (dock == "left")   left   = false;
             if (dock == "right")  right  = false;
 
             int hit = HTCLIENT;
-            if (top    && left)  hit = HTTOPLEFT;
-            else if (top  && right) hit = HTTOPRIGHT;
+            if (top    && left)   hit = HTTOPLEFT;
+            else if (top  && right)  hit = HTTOPRIGHT;
             else if (bottom && left)  hit = HTBOTTOMLEFT;
             else if (bottom && right) hit = HTBOTTOMRIGHT;
             else if (left)   hit = HTLEFT;
@@ -200,6 +208,24 @@ public class MainForm : Form
             else if (bottom) hit = HTBOTTOM;
 
             if (hit != HTCLIENT) { m.Result = new IntPtr(hit); return; }
+
+            // If the cursor is not over a resize edge and not over an interactive
+            // control, tell Windows this is the title bar. That gives us free native
+            // drag-to-move AND the snap-on-release via WM_MOVING without any manual
+            // MouseMove tracking.
+            if (!IsInteractiveControlAt(cursor))
+            {
+                m.Result = new IntPtr(HTCAPTION);
+                return;
+            }
+        }
+
+        // WM_MOVING fires continuously while the user is dragging; use it to snap
+        // the window to screen edges the moment the mouse button is released.
+        const int WM_EXITSIZEMOVE = 0x0232;
+        if (m.Msg == WM_EXITSIZEMOVE)
+        {
+            OnMoveOrResizeEnded();
         }
 
         if (m.Msg == NativeMethods.WM_HOTKEY)
@@ -342,41 +368,45 @@ public class MainForm : Form
         }
     }
 
-    // ── Drag mouse handlers ─────────────────────────────────────────────────
+    // ── Native-drag helpers ─────────────────────────────────────────────────
 
-    private void OnDragMouseDown(object? sender, MouseEventArgs e)
+    /// <summary>
+    /// Returns true if there is an interactive control (button, textbox, etc.)
+    /// at the given client-coordinate point.  Used by WM_NCHITTEST to decide
+    /// whether to return HTCAPTION (drag) or HTCLIENT (normal input).
+    /// </summary>
+    private bool IsInteractiveControlAt(Point clientPt)
     {
-        if (e.Button != MouseButtons.Left) return;
+        // Walk the control tree from this form down to the deepest child
+        Control current = this;
+        while (true)
+        {
+            var child = current.GetChildAtPoint(
+                current == this ? clientPt : current.PointToClient(PointToScreen(clientPt)));
+            if (child == null) break;
+            if (child is Button or TextBox or RichTextBox or TrackBar
+                      or ComboBox or CheckBox or RadioButton or ScrollBar)
+                return true;
+            current = child;
+        }
+        return false;
+    }
 
+    /// <summary>
+    /// Called when the user finishes a move or resize (WM_EXITSIZEMOVE).
+    /// Handles snap-to-dock and saves geometry.
+    /// </summary>
+    private void OnMoveOrResizeEnded()
+    {
         var prevDock = _configService.Config.Window.Dock;
+
+        // Reset full-edge-dock size when dragging away from a docked position
+        if (prevDock is "top" or "bottom")
+            Width = DefaultFloatingSize.Width;
+        else if (prevDock is "left" or "right")
+            Height = DefaultFloatingSize.Height;
+
         _configService.Config.Window.Dock = "none";
-
-        // When leaving a full-edge dock the window is screen-width or screen-height.
-        // Snap it back to a sensible floating size so the user isn't stuck with a
-        // full-screen bar they can't resize.
-        if (prevDock == "top" || prevDock == "bottom")
-            Size = new Size(DefaultFloatingSize.Width, Height);   // keep height, reset width
-        else if (prevDock == "left" || prevDock == "right")
-            Size = new Size(Width, DefaultFloatingSize.Height);   // keep width, reset height
-
-        _dragging   = true;
-        _dragOrigin = Control.MousePosition;
-        _formOrigin = Location;
-    }
-
-    private void OnDragMouseMove(object? sender, MouseEventArgs e)
-    {
-        if (!_dragging) return;
-        var delta = new Point(
-            Control.MousePosition.X - _dragOrigin.X,
-            Control.MousePosition.Y - _dragOrigin.Y);
-        Location = new Point(_formOrigin.X + delta.X, _formOrigin.Y + delta.Y);
-    }
-
-    private void OnDragMouseUp(object? sender, MouseEventArgs e)
-    {
-        if (!_dragging) return;
-        _dragging = false;
         TrySnap();
         SaveWindowGeometry();
     }
@@ -585,10 +615,29 @@ public class MainForm : Form
         _configService.SaveConfig();
     }
 
+    // ── Exit ────────────────────────────────────────────────────────────────
+
+    private void ExitApp()
+    {
+        _trayIcon?.Dispose();
+        _hotkeyService?.Dispose();
+        _iconService.Dispose();
+        Application.Exit();
+    }
+
     // ── Cleanup ─────────────────────────────────────────────────────────────
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        // Intercept the close button (Alt+F4, taskbar close) and hide instead,
+        // unless we're doing a real exit via ExitApp().
+        if (e.CloseReason == CloseReason.UserClosing)
+        {
+            e.Cancel = true;
+            Hide();
+            return;
+        }
+        _trayIcon?.Dispose();
         _hotkeyService?.Dispose();
         _iconService.Dispose();
         base.OnFormClosing(e);

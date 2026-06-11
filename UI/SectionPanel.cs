@@ -43,8 +43,6 @@ public class SectionPanel : Panel
 
     // ── Events ──────────────────────────────────────────────────────────────
 
-    public event EventHandler? SectionOrderChanged;
-    public event EventHandler? EntryOrderChanged;
     public event EventHandler? DataChanged;          // raised whenever anything persists
 
     // ── Constructor ─────────────────────────────────────────────────────────
@@ -245,7 +243,6 @@ public class SectionPanel : Panel
 
     public event EventHandler? CollapseAll;
     public event EventHandler? ExpandAll;
-    public event EventHandler? AddSectionRequested;
     public event EventHandler? RemoveSectionRequested;
 
     private void OnRemoveSectionClicked(object? sender, EventArgs e)

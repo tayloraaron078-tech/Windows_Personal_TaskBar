@@ -347,9 +347,8 @@ public class MainForm : Form
         var panel = new SectionPanel(section, _configService, _iconService, _launchService);
         panel.ApplyIconSize(_configService.Config.Window.IconSize);
 
-        panel.CollapseAll         += (_, _) => CollapseAllSections();
-        panel.ExpandAll           += (_, _) => ExpandAllSections();
-        panel.AddSectionRequested += (_, _) => AddSection();
+        panel.CollapseAll            += (_, _) => CollapseAllSections();
+        panel.ExpandAll              += (_, _) => ExpandAllSections();
         panel.RemoveSectionRequested += (_, _) =>
         {
             _configService.Sections.Remove(section);

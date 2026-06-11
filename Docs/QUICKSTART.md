@@ -68,5 +68,5 @@ Press **Ctrl+Space** (or click the 🔍 button) to open the search bar.
 
 - **Right-click a section header** to rename it, change its accent colour, switch display mode (icons only / icons + labels / labels only), or convert it to a **Scratchpad** for quick notes.
 - **Right-click an entry** to edit it, move it to another section, open its file location, or remove it.
-- Open **⚙ Settings** to configure startup behaviour, always-on-top, and custom hotkeys.
+- Open **⚙ Settings** to configure startup behaviour, always-on-top, custom hotkeys, and **window opacity** (15–100 %).
 - See [MANUAL.md](MANUAL.md) for a complete feature reference.

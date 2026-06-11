@@ -26,6 +26,8 @@ public class WindowConfig
     public bool   AlwaysOnTop { get; set; } = true;
     /// <summary>Drives all sizing. Range 24–96 px.</summary>
     public int    IconSize   { get; set; } = 48;
+    /// <summary>Window opacity. Range 0.15–1.0. Icons are always visible.</summary>
+    public double Opacity    { get; set; } = 1.0;
 }
 
 /// <summary>Global hotkey strings (e.g. "Ctrl+`", "Ctrl+Space").</summary>

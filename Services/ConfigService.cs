@@ -105,6 +105,7 @@ public class ConfigService
         sb.AppendLine($"monitor     = {w.Monitor}");
         sb.AppendLine($"always_on_top = {w.AlwaysOnTop.ToString().ToLower()}");
         sb.AppendLine($"icon_size   = {w.IconSize}");
+        sb.AppendLine($"opacity     = {w.Opacity.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
         sb.AppendLine();
         sb.AppendLine("[hotkeys]");
         sb.AppendLine($"toggle_visibility = \"{h.ToggleVisibility}\"");
@@ -169,6 +170,7 @@ public class ConfigService
             cfg.Window.Monitor     = Get(wt, "monitor",       cfg.Window.Monitor);
             cfg.Window.AlwaysOnTop = GetBool(wt, "always_on_top", cfg.Window.AlwaysOnTop);
             cfg.Window.IconSize    = Math.Clamp(Get(wt, "icon_size", cfg.Window.IconSize), 24, 96);
+            cfg.Window.Opacity     = Math.Clamp(GetDouble(wt, "opacity", cfg.Window.Opacity), 0.15, 1.0);
         }
 
         if (t.TryGetValue("hotkeys", out var hObj) && hObj is TomlTable ht)
@@ -274,6 +276,11 @@ public class ConfigService
 
     private static bool GetBool(TomlTable t, string key, bool fallback) =>
         t.TryGetValue(key, out var v) && v is bool b ? b : fallback;
+
+    private static double GetDouble(TomlTable t, string key, double fallback) =>
+        t.TryGetValue(key, out var v)
+            ? v is double d ? d : v is long l ? (double)l : fallback
+            : fallback;
 
     // Escape backslashes and double-quotes for single-line TOML strings
     private static string EscapeToml(string s) =>

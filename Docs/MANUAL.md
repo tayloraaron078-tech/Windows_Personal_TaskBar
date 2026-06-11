@@ -185,6 +185,7 @@ Open with the **⚙** button in the control strip.
 | Setting | Description |
 |---------|-------------|
 | **Icon Size** slider | Range 24–96 px. Changes take effect immediately (live preview). All spacing, label font size, and control dimensions scale from this single value. |
+| **Opacity** slider | Range 15–100 %. Sets how transparent the bar body is. Icons are always fully visible regardless of this setting. Changes take effect immediately (live preview). Saved to `config.toml`. |
 | **Toggle Hotkey** | Global hotkey to show/hide the bar. Default: `Ctrl+\`` |
 | **Search Hotkey** | Global hotkey to open search. Default: `Ctrl+Space` |
 | **Launch with Windows** | Writes/removes a registry key at `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` to start the bar at login. |
@@ -210,6 +211,7 @@ dock          = "none"    # none | top | bottom | left | right
 monitor       = 0         # zero-based monitor index
 always_on_top = true
 icon_size     = 48        # 24–96
+opacity       = 1.00      # 0.15–1.0 (15 %–100 %)
 
 [hotkeys]
 toggle_visibility = "Ctrl+`"

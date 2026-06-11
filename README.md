@@ -13,6 +13,7 @@ A fully customisable Windows launcher bar for power users — dock it to any scr
 - **Live search** — `Ctrl+Space` to filter all entries instantly; Enter to launch top result
 - **Scratchpad sections** — in-bar text area that auto-saves as you type
 - **Single `IconSize` slider** (24–96 px) scales everything proportionally
+- **Adjustable opacity** — set the bar transparency from 15 % to fully opaque; icons always remain visible
 - **Portable** — all config stored in `config.toml` and `entries.toml` next to the `.exe`; no installer, no AppData
 - **Windows theme aware** — uses `SystemColors`/`SystemFonts` throughout; works with light and dark mode automatically
 

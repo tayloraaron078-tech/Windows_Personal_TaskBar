@@ -74,6 +74,7 @@ public class MainForm : Form
 
         FormBorderStyle = FormBorderStyle.None;
         TopMost         = configService.Config.Window.AlwaysOnTop;
+        Opacity         = configService.Config.Window.Opacity;
         ShowInTaskbar   = true;
         DoubleBuffered  = true;
         BackColor       = SystemColors.Window;
@@ -573,9 +574,10 @@ public class MainForm : Form
     private void OpenSettings()
     {
         using var dlg = new SettingsForm(_configService);
-        dlg.IconSizeChanged    += (_, size) => ApplyIconSize(size);
-        dlg.AlwaysOnTopChanged += (_, top)  => { TopMost = top; };
-        dlg.HotkeysChanged     += (_, _)    => RegisterHotkeys();
+        dlg.IconSizeChanged    += (_, size)    => ApplyIconSize(size);
+        dlg.AlwaysOnTopChanged += (_, top)    => { TopMost = top; };
+        dlg.OpacityChanged     += (_, opacity) => { Opacity = opacity; };
+        dlg.HotkeysChanged     += (_, _)      => RegisterHotkeys();
         ShowDialogSafe(dlg);
     }
 

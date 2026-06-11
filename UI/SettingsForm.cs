@@ -20,6 +20,8 @@ public class SettingsForm : Form
     // Controls
     private readonly TrackBar   _sldIconSize;
     private readonly Label      _lblIconSizeValue;
+    private readonly TrackBar   _sldOpacity;
+    private readonly Label      _lblOpacityValue;
     private readonly TextBox    _tbToggleHotkey;
     private readonly TextBox    _tbSearchHotkey;
     private readonly CheckBox   _chkStartup;
@@ -34,6 +36,9 @@ public class SettingsForm : Form
     /// <summary>Raised when the user changes the always-on-top toggle.</summary>
     public event EventHandler<bool>? AlwaysOnTopChanged;
 
+    /// <summary>Raised when the user changes the opacity slider so the main form can live-preview.</summary>
+    public event EventHandler<double>? OpacityChanged;
+
     /// <summary>Raised when hotkey strings change so the main form re-registers them.</summary>
     public event EventHandler? HotkeysChanged;
 
@@ -43,7 +48,7 @@ public class SettingsForm : Form
         _config        = configService.Config;
 
         Text            = "Personal TaskBar – Settings";
-        Size            = new System.Drawing.Size(360, 370);
+        Size            = new System.Drawing.Size(360, 420);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition   = FormStartPosition.CenterParent;
         MaximizeBox     = false;
@@ -73,6 +78,16 @@ public class SettingsForm : Form
 
         AddRow(layout, "Icon Size:", _sldIconSize);
         AddRow(layout, string.Empty, _lblIconSizeValue);
+
+        // Opacity slider (15–100 maps to 0.15–1.0)
+        int opacityPct = (int)Math.Round(_config.Window.Opacity * 100);
+        _sldOpacity      = new TrackBar { Minimum = 15, Maximum = 100, Value = opacityPct,
+                                          TickFrequency = 5, Dock = DockStyle.Fill };
+        _lblOpacityValue = new Label    { Text = opacityPct + "%",
+                                          TextAlign = System.Drawing.ContentAlignment.MiddleLeft,
+                                          Dock = DockStyle.Fill };
+        AddRow(layout, "Opacity:", _sldOpacity);
+        AddRow(layout, string.Empty, _lblOpacityValue);
 
         // Toggle hotkey
         _tbToggleHotkey = new TextBox { Text = _config.Hotkeys.ToggleVisibility, Dock = DockStyle.Fill };
@@ -118,6 +133,14 @@ public class SettingsForm : Form
             _lblIconSizeValue.Text    = snapped + "px";
             _config.Window.IconSize   = snapped;
             IconSizeChanged?.Invoke(this, snapped);
+        };
+
+        _sldOpacity.ValueChanged += (_, _) =>
+        {
+            int pct = _sldOpacity.Value;
+            _lblOpacityValue.Text    = pct + "%";
+            _config.Window.Opacity   = pct / 100.0;
+            OpacityChanged?.Invoke(this, _config.Window.Opacity);
         };
 
         _chkAlwaysOnTop.CheckedChanged += (_, _) =>

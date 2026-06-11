@@ -6,6 +6,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ---
 
+## [1.1.0] – 2026-06-11
+
+### Added
+- **Adjustable window opacity** — a new Opacity slider (15–100 %) in Settings lets you set how transparent the bar body appears. Icons are always rendered fully opaque regardless of the opacity value. The setting is persisted as `opacity` in `config.toml` and applied immediately as a live preview while dragging the slider.
+
+### Fixed
+- **Startup crash (silent exit before window appears)** — `SHGetImageList` / `IImageList` COM vtable mismatch caused an unrecoverable `AccessViolationException` in .NET 8, killing the process before the message loop started. Removed COM interop entirely; icon extraction now uses `Icon.ExtractAssociatedIcon` (managed) and `SHGetFileInfo` (safe P/Invoke only).
+- **Entries not launching** — `Click` events on `EntryButton` were being absorbed by the parent `FlowLayoutPanel`'s `MouseDown` drag subscription. Switched to `MouseUp + _hovered` tracking and excluded `EntryButton` from `EnableDragOn`. Added `Margin = Padding.Empty` so no gap pixels steal mouse events.
+- **Icons invisible** — `Icon.ToBitmap()` and `g.Clear(Color.Transparent)` both produce bitmaps with alpha = 0 on Windows masked icons. Fixed by using `DrawIconEx` (via P/Invoke) for all HICON→Bitmap conversions, and `g.Clear(BackColor)` in DoubleBuffered paint.
+- **Move to Section target panel not updated** — Added `EntryMovedToSection` event on `SectionPanel`; `MainForm` now calls `RebuildEntries()` on the target panel immediately after a move.
+- **Icon not refreshing after Edit Entry without restart** — Changed `btn.Invalidate()` to `btn.ApplyIconSize()` after an edit to bust the icon cache.
+- **Path not found with quoted paths** — Added `Trim('"')` at every path boundary (load, launch, icon service, edit form) to strip surrounding quotes that Windows Explorer sometimes adds.
+- **Dialogs hidden behind TopMost window** — `ShowDialogSafe()` now temporarily drops `TopMost` before opening any dialog.
+- **Entries still visible in wrong section after section rebuild** — `_content.Location` is now always set explicitly to avoid `FlowLayoutPanel` placing child controls over the section header.
+- **`AccessViolationException` from double `EnableDragOn` call** — Removed `EnableDragOn` from the constructor; it is now called only in `OnShown` after layout.
+- **Crash exceptions silently discarded before message loop** — Added `AppDomain.CurrentDomain.UnhandledException` handler in `Program.cs` to surface pre-loop crashes with a visible message box.
+
+---
+
 ## [1.0.0] – 2026-06-11
 
 ### Added

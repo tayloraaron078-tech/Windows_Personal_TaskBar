@@ -26,7 +26,7 @@ public class IconService : IDisposable
     /// </summary>
     public Image GetIcon(Entry entry, int size)
     {
-        var expandedPath = Environment.ExpandEnvironmentVariables(entry.Path);
+        var expandedPath = Environment.ExpandEnvironmentVariables(entry.Path).Trim('"');
         var cacheKey     = $"{entry.IconOverride}|{expandedPath}|{size}";
 
         if (_cache.TryGetValue(cacheKey, out var cached))
@@ -52,7 +52,7 @@ public class IconService : IDisposable
         // 1. Custom icon override (.ico or .png)
         if (!string.IsNullOrEmpty(entry.IconOverride))
         {
-            var overridePath = Environment.ExpandEnvironmentVariables(entry.IconOverride);
+            var overridePath = Environment.ExpandEnvironmentVariables(entry.IconOverride).Trim('"');
             try
             {
                 var ext = Path.GetExtension(overridePath).ToLower();
@@ -106,35 +106,67 @@ public class IconService : IDisposable
 
     private static Image? GetShellIcon(string path, string entryType, int size)
     {
+        // Get the system image list index via SHGetFileInfo (no icon extracted yet)
         var shfi  = new NativeMethods.SHFILEINFO();
-        uint flags = NativeMethods.SHGFI_ICON;
+        uint flags = NativeMethods.SHGFI_SYSICONINDEX | NativeMethods.SHGFI_LARGEICON;
 
-        // Use SHGFI_LARGEICON for sizes >= 32, else SHGFI_SMALLICON
-        flags |= size >= 32 ? NativeMethods.SHGFI_LARGEICON : NativeMethods.SHGFI_SMALLICON;
-
-        // For URLs and missing files, tell shell to use the file attribute rather than the actual path
         bool pathExists = File.Exists(path) || Directory.Exists(path);
+        string queryPath = path;
         if (!pathExists)
         {
-            flags |= NativeMethods.SHGFI_USEFILEATTRIBUTES;
-            path   = entryType == "url" ? ".html" : path; // hint for URL entries
+            flags    |= NativeMethods.SHGFI_USEFILEATTRIBUTES;
+            queryPath = entryType == "url" ? ".html" : path;
         }
+
+        var result = NativeMethods.SHGetFileInfo(queryPath, NativeMethods.FILE_ATTRIBUTE_NORMAL,
+            ref shfi, (uint)System.Runtime.InteropServices.Marshal.SizeOf(shfi), flags);
+
+        if (result == IntPtr.Zero)
+            return GetShellIconLegacy(queryPath, entryType, pathExists, size);
+
+        // For sizes > 32, use SHGetImageList which has 48x48 (EXTRALARGE) and 256x256 (JUMBO)
+        int shil = size >= 64 ? NativeMethods.SHIL_JUMBO
+                 : size >= 36 ? NativeMethods.SHIL_EXTRALARGE
+                 : size >= 24 ? NativeMethods.SHIL_LARGE
+                 :               NativeMethods.SHIL_SMALL;
+
+        try
+        {
+            var iid = NativeMethods.IID_IImageList;
+            NativeMethods.SHGetImageList(shil, ref iid, out var imageList);
+            imageList.GetIcon(shfi.iIcon, 0x0001 /* ILD_TRANSPARENT */, out var hIcon);
+            if (hIcon == IntPtr.Zero) goto legacy;
+
+            try
+            {
+                using var icon = Icon.FromHandle(hIcon);
+                return new Bitmap(icon.ToBitmap(), size, size);
+            }
+            finally { NativeMethods.DestroyIcon(hIcon); }
+        }
+        catch { /* fall through to legacy */ }
+
+        legacy:
+        return GetShellIconLegacy(queryPath, entryType, pathExists, size);
+    }
+
+    private static Image? GetShellIconLegacy(string path, string entryType, bool pathExists, int size)
+    {
+        var shfi  = new NativeMethods.SHFILEINFO();
+        uint flags = NativeMethods.SHGFI_ICON | NativeMethods.SHGFI_LARGEICON;
+        if (!pathExists) flags |= NativeMethods.SHGFI_USEFILEATTRIBUTES;
 
         var result = NativeMethods.SHGetFileInfo(path, NativeMethods.FILE_ATTRIBUTE_NORMAL,
             ref shfi, (uint)System.Runtime.InteropServices.Marshal.SizeOf(shfi), flags);
 
-        if (result == IntPtr.Zero || shfi.hIcon == IntPtr.Zero)
-            return null;
+        if (result == IntPtr.Zero || shfi.hIcon == IntPtr.Zero) return null;
 
         try
         {
             using var icon = Icon.FromHandle(shfi.hIcon);
             return new Bitmap(icon.ToBitmap(), size, size);
         }
-        finally
-        {
-            NativeMethods.DestroyIcon(shfi.hIcon);
-        }
+        finally { NativeMethods.DestroyIcon(shfi.hIcon); }
     }
 
     // ── IDisposable ─────────────────────────────────────────────────────────

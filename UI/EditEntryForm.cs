@@ -167,10 +167,10 @@ public class EditEntryForm : Form
             return;
         }
 
-        // Commit changes to the model
+        // Commit changes to the model; strip quotes that users sometimes type around paths
         _entry.Name         = name;
         _entry.Type         = _cbType.SelectedItem?.ToString() ?? "exe";
-        _entry.Path         = path;
-        _entry.IconOverride = _tbIconOverride.Text.Trim();
+        _entry.Path         = path.Trim('"');
+        _entry.IconOverride = _tbIconOverride.Text.Trim().Trim('"');
     }
 }

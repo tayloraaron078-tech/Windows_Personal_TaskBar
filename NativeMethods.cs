@@ -119,8 +119,34 @@ internal static class NativeMethods
         ref SHFILEINFO psfi, uint cbSizeFileInfo, uint uFlags);
 
     public const uint SHGFI_ICON              = 0x000000100;
+    public const uint SHGFI_SYSICONINDEX      = 0x000004000;
     public const uint SHGFI_SMALLICON         = 0x000000001;
     public const uint SHGFI_LARGEICON         = 0x000000000;
     public const uint SHGFI_USEFILEATTRIBUTES = 0x000000010;
     public const uint FILE_ATTRIBUTE_NORMAL   = 0x00000080;
+
+    // ── SHGetImageList (for 48x48 and 256x256 icons) ───────────────────────
+
+    public const int SHIL_SMALL      = 1;  // 16x16
+    public const int SHIL_LARGE      = 0;  // 32x32
+    public const int SHIL_EXTRALARGE = 2;  // 48x48
+    public const int SHIL_JUMBO      = 4;  // 256x256
+
+    [DllImport("shell32.dll", PreserveSig = false)]
+    public static extern void SHGetImageList(int iImageList, ref Guid riid, out IImageList ppv);
+
+    public static readonly Guid IID_IImageList = new Guid("46EB5926-582E-4017-9FDF-E8998DAA0950");
+
+    [ComImport, Guid("46EB5926-582E-4017-9FDF-E8998DAA0950"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IImageList
+    {
+        [PreserveSig] int Add(IntPtr hbmImage, IntPtr hbmMask, out int pi);
+        [PreserveSig] int Replace(int i, IntPtr hbmImage, IntPtr hbmMask);
+        [PreserveSig] int AddMasked(IntPtr hbmImage, uint crMask, out int pi);
+        [PreserveSig] int Draw(IntPtr pimldp);
+        [PreserveSig] int Remove(int i);
+        [PreserveSig] int GetIcon(int i, uint flags, out IntPtr picon);
+        // remaining methods not needed
+    }
 }

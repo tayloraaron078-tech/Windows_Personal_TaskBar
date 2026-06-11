@@ -166,12 +166,8 @@ public class MainForm : Form
         };
         _trayIcon.DoubleClick += (_, _) => ToggleVisibility();
 
-        // ── Enable drag on every non-interactive surface ──────────────────
-        // Uses ReleaseCapture + SendMessage(WM_NCLBUTTONDOWN) so the OS owns
-        // the move loop.  This works even when buttons/panels intercept clicks.
-        EnableDragOn(this);
-
         // ── Sections ──────────────────────────────────────────────────────
+        // EnableDragOn is called in OnShown (after layout) so panels exist.
 
         RebuildSections();
         _iconService.Preload(_configService.Sections, _configService.Config.Window.IconSize);
@@ -279,8 +275,9 @@ public class MainForm : Form
     private void EnableDragOn(Control c)
     {
         // Interactive controls need their own mouse handling; skip them.
+        // EntryButton MUST be excluded — it handles its own Click for launching.
         if (c is Button or TextBox or RichTextBox or TrackBar
-               or ComboBox or CheckBox or RadioButton or ScrollBar)
+               or ComboBox or CheckBox or RadioButton or ScrollBar or EntryButton)
             return;
 
         c.MouseDown += OnSurfaceMouseDown;
@@ -480,7 +477,7 @@ public class MainForm : Form
             _configService.SaveEntries();
             RebuildSections();
         };
-        panel.DataChanged += (_, _) => EnableDragOn(panel); // re-subscribe after new entry buttons
+        panel.DataChanged += (_, _) => EnableDragOn(panel); // re-subscribe drag to new EntryButton panels
 
         return panel;
     }

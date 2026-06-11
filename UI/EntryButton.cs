@@ -54,7 +54,7 @@ public class EntryButton : Panel
         _launchService = launchService;
         _configService = configService;
 
-        BackColor      = Color.Transparent;
+        BackColor      = SystemColors.Window;
         ForeColor      = SystemColors.WindowText;
         Cursor         = Cursors.Hand;
         DoubleBuffered = true;
@@ -101,7 +101,7 @@ public class EntryButton : Panel
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(Color.Transparent);
+        g.Clear(BackColor);
         g.SmoothingMode     = SmoothingMode.AntiAlias;
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.PixelOffsetMode   = PixelOffsetMode.HighQuality;

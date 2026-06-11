@@ -26,7 +26,7 @@ public class LaunchService
     /// </summary>
     public bool Launch(Entry entry)
     {
-        var expandedPath = Environment.ExpandEnvironmentVariables(entry.Path);
+        var expandedPath = Environment.ExpandEnvironmentVariables(entry.Path).Trim('"');
 
         try
         {
@@ -97,7 +97,7 @@ public class LaunchService
     /// <summary>Opens the folder that contains the entry's target in Explorer.</summary>
     public static void OpenFileLocation(Entry entry)
     {
-        var expandedPath = Environment.ExpandEnvironmentVariables(entry.Path);
+        var expandedPath = Environment.ExpandEnvironmentVariables(entry.Path).Trim('"');
 
         try
         {

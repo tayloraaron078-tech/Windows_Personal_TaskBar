@@ -86,7 +86,7 @@ public class SectionPanel : Panel
         {
             Dock      = DockStyle.Top,
             Height    = 24,
-            BackColor = Color.Transparent,
+            BackColor = SystemColors.Window,
             Cursor    = Cursors.SizeAll,   // hint that the section is draggable
         };
 
@@ -95,7 +95,7 @@ public class SectionPanel : Panel
             Text      = section.Name + (_collapsed ? " ▶" : " ▼"),
             Font      = new Font(SystemFonts.DefaultFont.FontFamily, 9f, FontStyle.Bold),
             ForeColor = SystemColors.WindowText,
-            BackColor = Color.Transparent,
+            BackColor = SystemColors.Window,
             AutoSize  = false,
             Dock      = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
@@ -116,7 +116,7 @@ public class SectionPanel : Panel
             WrapContents  = true,
             AutoSize      = false,
             Height        = 0,
-            BackColor     = Color.Transparent,
+            BackColor     = SystemColors.Window,
             Visible       = !_collapsed,
         };
 

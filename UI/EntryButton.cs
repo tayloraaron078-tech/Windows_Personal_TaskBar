@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 using Personal_TaskBar.Models;
 using Personal_TaskBar.Services;
@@ -7,36 +8,43 @@ using Personal_TaskBar.Services;
 namespace Personal_TaskBar.UI;
 
 /// <summary>
-/// Custom button control representing one entry inside a section.
-/// Renders icon, label, and a recency dot depending on the section's display mode.
-/// Left-click launches; right-click opens context menu.
+/// Custom panel representing one entry (app / file / folder) in the bar.
+/// Renders an icon and/or label with a Windows 11-style rounded-rectangle hover highlight.
+/// Left-click launches; right-click shows context menu.
 /// </summary>
 public class EntryButton : Panel
 {
-    // ── Data ────────────────────────────────────────────────────────────────
+    // ── Data ─────────────────────────────────────────────────────────────────
 
-    public Entry      EntryModel    { get; }
-    public string     DisplayMode   { get; set; } = "icons_labels";
+    public Entry  EntryModel  { get; }
+    public string DisplayMode { get; private set; } = "icons_labels";
 
-    // ── Dependencies ────────────────────────────────────────────────────────
+    // ── Dependencies ─────────────────────────────────────────────────────────
 
     private readonly IconService   _iconService;
     private readonly LaunchService _launchService;
     private readonly ConfigService _configService;
 
-    // ── Visual state ────────────────────────────────────────────────────────
+    // ── Visual state ─────────────────────────────────────────────────────────
 
-    private bool  _hovered;
+    private bool   _hovered;
+    private bool   _pressed;
     private Image? _icon;
-    private int   _iconSize = 48;
+    private int    _iconSize  = 48;
+    private Font   _labelFont = new Font("Segoe UI", 8f);
 
-    // ── Events ──────────────────────────────────────────────────────────────
+    // Corner radius for the hover pill
+    private const int Radius = 6;
 
-    public event EventHandler?       LaunchRequested;
-    public event EventHandler?       EditRequested;
+    // ── Events ───────────────────────────────────────────────────────────────
+
+    public event EventHandler?          LaunchRequested;
+    public event EventHandler?          EditRequested;
     public event EventHandler<Section>? MoveToSectionRequested;
-    public event EventHandler?       RemoveRequested;
-    public event EventHandler?       OpenLocationRequested;
+    public event EventHandler?          RemoveRequested;
+    public event EventHandler?          OpenLocationRequested;
+
+    // ── Constructor ──────────────────────────────────────────────────────────
 
     public EntryButton(Entry entry, IconService iconService,
                        LaunchService launchService, ConfigService configService)
@@ -46,80 +54,84 @@ public class EntryButton : Panel
         _launchService = launchService;
         _configService = configService;
 
-        // Inherit Windows system colours so light/dark theme works automatically
-        BackColor = SystemColors.Control;
-        ForeColor = SystemColors.ControlText;
-        Cursor    = Cursors.Hand;
+        BackColor      = Color.Transparent;
+        ForeColor      = SystemColors.WindowText;
+        Cursor         = Cursors.Hand;
         DoubleBuffered = true;
 
         BuildContextMenu();
         WireEvents();
     }
 
-    // ── Public API ──────────────────────────────────────────────────────────
+    // ── Public API ────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Recalculates the control size and invalidates the display.
-    /// Call whenever IconSize or DisplayMode changes.
-    /// </summary>
     public void ApplyIconSize(int iconSize, string displayMode)
     {
         _iconSize   = iconSize;
         DisplayMode = displayMode;
 
-        // Preload icon at new size (cache miss will trigger extraction)
         _icon = _iconService.GetIcon(EntryModel, iconSize);
 
-        int padding  = Math.Max(4, iconSize / 8);
-        int fontSize = Math.Max(7, iconSize / 5);
-        Font = new Font(SystemFonts.DefaultFont.FontFamily, fontSize);
+        float fontSize  = Math.Max(7f, iconSize / 6f);
+        _labelFont      = TryFont("Segoe UI", fontSize) ?? new Font(SystemFonts.DefaultFont.FontFamily, fontSize);
+        Font            = _labelFont;
 
+        int pad = Pad();
         switch (displayMode)
         {
             case "icons_only":
-                Width  = iconSize + padding * 2;
-                Height = iconSize + padding * 2;
+                Width  = iconSize + pad * 2;
+                Height = iconSize + pad * 2;
                 break;
-
             case "labels_only":
                 Width  = 120;
-                Height = fontSize * 2 + padding * 2;
+                Height = (int)(_labelFont.Height * 1.6f) + pad * 2;
                 break;
-
             default: // icons_labels
-                Width  = iconSize + padding * 2;
-                Height = iconSize + fontSize * 2 + padding * 3;
+                Width  = iconSize + pad * 2;
+                Height = iconSize + (int)(_labelFont.Height * 1.8f) + pad * 2;
                 break;
         }
 
         Invalidate();
     }
 
-    // ── Painting ────────────────────────────────────────────────────────────
+    // ── Painting ──────────────────────────────────────────────────────────────
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(_hovered ? SystemColors.ControlLight : SystemColors.Control);
+        g.Clear(Color.Transparent);
+        g.SmoothingMode     = SmoothingMode.AntiAlias;
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.PixelOffsetMode   = PixelOffsetMode.HighQuality;
 
-        int padding  = Math.Max(4, _iconSize / 8);
+        if (_pressed || _hovered)
+        {
+            // Windows 11 uses a very subtle, semi-transparent rounded-rect for hover
+            var alpha   = _pressed ? 40 : 20;
+            var fillClr = Color.FromArgb(alpha, SystemColors.WindowText);
+            using var brush = new SolidBrush(fillClr);
+            using var path  = RoundedRect(new Rectangle(2, 2, Width - 4, Height - 4), Radius);
+            g.FillPath(brush, path);
+        }
 
+        int pad = Pad();
         switch (DisplayMode)
         {
             case "icons_only":
-                DrawIcon(g, padding, padding, _iconSize);
-                DrawRecencyDot(g, Width - 8, 4);
+                DrawIcon(g, pad, pad, _iconSize);
+                DrawRecencyDot(g, Width - 7, 3);
                 break;
-
             case "labels_only":
-                DrawLabel(g, padding, padding, Width - padding * 2);
-                DrawRecencyDot(g, Width - 8, Height / 2 - 4);
+                DrawLabel(g, pad, pad, Width - pad * 2, Height - pad * 2);
+                DrawRecencyDot(g, Width - 7, Height / 2 - 3);
                 break;
-
             default: // icons_labels
-                DrawIcon(g, padding, padding, _iconSize);
-                DrawLabel(g, padding, padding + _iconSize + padding, Width - padding * 2);
-                DrawRecencyDot(g, Width - 8, 4);
+                DrawIcon(g, pad, pad, _iconSize);
+                int labelY = pad + _iconSize + 2;
+                DrawLabel(g, pad, labelY, Width - pad * 2, Height - labelY - pad);
+                DrawRecencyDot(g, Width - 7, 3);
                 break;
         }
     }
@@ -129,95 +141,109 @@ public class EntryButton : Panel
         _icon ??= _iconService.GetIcon(EntryModel, size);
         if (_icon != null)
             g.DrawImage(_icon, x, y, size, size);
+        else
+        {
+            // Fallback: draw a simple rounded placeholder
+            using var br = new SolidBrush(Color.FromArgb(60, SystemColors.WindowText));
+            g.FillRectangle(br, x, y, size, size);
+        }
     }
 
-    private void DrawLabel(Graphics g, int x, int y, int maxWidth)
+    private void DrawLabel(Graphics g, int x, int y, int w, int h)
     {
         var fmt = new StringFormat
         {
             Trimming      = StringTrimming.EllipsisCharacter,
             Alignment     = StringAlignment.Center,
-            LineAlignment = StringAlignment.Near,
+            LineAlignment = StringAlignment.Center,
+            FormatFlags   = StringFormatFlags.LineLimit,
         };
-        g.DrawString(EntryModel.Name, Font, SystemBrushes.ControlText,
-                     new RectangleF(x, y, maxWidth, Font.Height * 2), fmt);
+        using var brush = new SolidBrush(ForeColor);
+        g.DrawString(EntryModel.Name, _labelFont, brush,
+                     new RectangleF(x, y, w, Math.Max(h, _labelFont.Height)), fmt);
     }
 
-    /// <summary>
-    /// Draws a small green dot in the corner if this entry was launched recently.
-    /// The dot signals "recently used" without cluttering the icon.
-    /// </summary>
     private void DrawRecencyDot(Graphics g, int x, int y)
     {
         if (!LaunchService.IsRecent(EntryModel)) return;
-        g.FillEllipse(Brushes.LimeGreen, x, y, 7, 7);
+        using var br = new SolidBrush(Color.FromArgb(200, 40, 180, 80));
+        g.FillEllipse(br, x, y, 6, 6);
     }
 
-    // ── Events wiring ───────────────────────────────────────────────────────
+    // ── Events ────────────────────────────────────────────────────────────────
 
     private void WireEvents()
     {
-        MouseEnter += (_, _) => { _hovered = true;  Invalidate(); };
-        MouseLeave += (_, _) => { _hovered = false; Invalidate(); };
+        MouseEnter  += (_, _) => { _hovered = true;  Invalidate(); };
+        MouseLeave  += (_, _) => { _hovered = false; _pressed = false; Invalidate(); };
+        MouseDown   += (_, me) => { if (me.Button == MouseButtons.Left) { _pressed = true; Invalidate(); } };
+        MouseUp     += (_, me) => { if (me.Button == MouseButtons.Left) { _pressed = false; Invalidate(); } };
 
         Click += (_, _) =>
         {
             _launchService.Launch(EntryModel);
-            Invalidate(); // refresh recency dot
+            Invalidate();
             LaunchRequested?.Invoke(this, EventArgs.Empty);
         };
 
-        // Tooltip for icons-only mode (and as a general accessibility aid)
-        var tip = new ToolTip();
+        var tip = new ToolTip { ShowAlways = true };
         tip.SetToolTip(this, EntryModel.Name);
     }
 
     private void BuildContextMenu()
     {
-        var menu = new ContextMenuStrip();
+        var menu = new ContextMenuStrip { Font = new Font("Segoe UI", 9f) };
         menu.Opening += (_, _) => RebuildMoveToMenu(menu);
 
-        menu.Items.Add("Edit Entry",        null, (_, _) => EditRequested?.Invoke(this, EventArgs.Empty));
-        menu.Items.Add("Open File Location",null, (_, _) => OpenLocationRequested?.Invoke(this, EventArgs.Empty));
+        menu.Items.Add("Edit Entry",         null, (_, _) => EditRequested?.Invoke(this, EventArgs.Empty));
+        menu.Items.Add("Open File Location", null, (_, _) => OpenLocationRequested?.Invoke(this, EventArgs.Empty));
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Remove Entry",      null, OnRemoveClicked);
+        menu.Items.Add("Remove Entry",       null, OnRemoveClicked);
 
         ContextMenuStrip = menu;
     }
 
-    /// <summary>
-    /// Rebuilds the "Move to Section" submenu each time the context menu opens
-    /// so it always reflects the current section list.
-    /// </summary>
     private void RebuildMoveToMenu(ContextMenuStrip menu)
     {
-        // Remove old "Move to Section" item if present
         for (int i = menu.Items.Count - 1; i >= 0; i--)
-        {
-            if (menu.Items[i].Text == "Move to Section")
-                menu.Items.RemoveAt(i);
-        }
+            if (menu.Items[i].Text == "Move to Section") menu.Items.RemoveAt(i);
 
         var moveItem = new ToolStripMenuItem("Move to Section");
         foreach (var sec in _configService.Sections)
         {
             if (sec.Type == "scratchpad") continue;
-            var capturedSec = sec;
+            var captured = sec;
             moveItem.DropDownItems.Add(sec.Name, null,
-                (_, _) => MoveToSectionRequested?.Invoke(this, capturedSec));
+                (_, _) => MoveToSectionRequested?.Invoke(this, captured));
         }
-
-        // Insert before "Remove Entry"
         menu.Items.Insert(menu.Items.Count - 2, moveItem);
     }
 
     private void OnRemoveClicked(object? sender, EventArgs e)
     {
-        var result = MessageBox.Show(
-            $"Remove \"{EntryModel.Name}\"?", "Personal TaskBar",
-            MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-
-        if (result == DialogResult.Yes)
+        if (MessageBox.Show($"Remove \"{EntryModel.Name}\"?", "Personal TaskBar",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             RemoveRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private int Pad() => Math.Max(4, _iconSize / 10);
+
+    private static Font? TryFont(string name, float size)
+    {
+        try { return new Font(name, size); } catch { return null; }
+    }
+
+    private static GraphicsPath RoundedRect(Rectangle r, int radius)
+    {
+        int d = radius * 2;
+        var p = new GraphicsPath();
+        p.AddArc(r.X, r.Y, d, d, 180, 90);
+        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
     }
 }

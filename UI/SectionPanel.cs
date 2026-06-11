@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Linq;
 using System.Windows.Forms;
 using Personal_TaskBar.Models;
@@ -8,9 +9,19 @@ using Personal_TaskBar.Services;
 namespace Personal_TaskBar.UI;
 
 /// <summary>
-/// Custom panel control that renders one section: header bar with accent line,
-/// collapse animation, and a flow container of EntryButton or ScratchpadPanel children.
-/// Supports drag-to-reorder of entries within itself and drag-to-move between sections.
+/// Custom panel representing one named section of the bar.
+///
+/// Layout (top → bottom):
+///   ┌──────────────────────────────────┐
+///   │  _header  (Panel, Dock=Top)      │  fixed height
+///   ├──────────────────────────────────┤
+///   │  accent line (painted in OnPaint)│  2 px
+///   ├──────────────────────────────────┤
+///   │  _content (FlowLayoutPanel)      │  grows with entries
+///   └──────────────────────────────────┘
+///
+/// Key invariant: _content.Location.Y == _header.Height + 2 always.
+/// UpdateHeight() recalculates the SectionPanel's own Height to fit both.
 /// </summary>
 public class SectionPanel : Panel
 {
@@ -20,33 +31,38 @@ public class SectionPanel : Panel
 
     // ── Dependencies ────────────────────────────────────────────────────────
 
-    private readonly ConfigService          _configService;
-    private readonly IconService            _iconService;
-    private readonly LaunchService          _launchService;
-    private readonly Func<Form, DialogResult> _showDialog;
+    private readonly ConfigService              _configService;
+    private readonly IconService                _iconService;
+    private readonly LaunchService              _launchService;
+    private readonly Func<Form, DialogResult>   _showDialog;
 
     // ── Child controls ──────────────────────────────────────────────────────
 
-    private readonly Panel          _header;        // Section name + accent line
-    private readonly FlowLayoutPanel _content;      // Entry buttons or scratchpad
-    private readonly Label          _headerLabel;
+    private readonly Panel           _header;
+    private readonly Label           _headerLabel;
+    private readonly FlowLayoutPanel _content;
 
-    // ── State ───────────────────────────────────────────────────────────────
+    // ── State ────────────────────────────────────────────────────────────────
 
     private bool   _collapsed;
     private int    _iconSize    = 48;
     private string _displayMode = "icons_labels";
 
-    // ── Drag-to-reorder state ───────────────────────────────────────────────
+    // ── Drag-to-reorder ──────────────────────────────────────────────────────
 
     private EntryButton? _draggedEntry;
-    private int          _dragStartIndex;
 
-    // ── Events ──────────────────────────────────────────────────────────────
+    // ── Events ───────────────────────────────────────────────────────────────
 
-    public event EventHandler? DataChanged;          // raised whenever anything persists
+    public event EventHandler? DataChanged;
+    public event EventHandler? CollapseAll;
+    public event EventHandler? ExpandAll;
+    public event EventHandler? RemoveSectionRequested;
 
-    // ── Constructor ─────────────────────────────────────────────────────────
+    // Accent line height below the header
+    private const int AccentH = 2;
+
+    // ── Constructor ──────────────────────────────────────────────────────────
 
     public SectionPanel(Section section, ConfigService configService,
                         IconService iconService, LaunchService launchService,
@@ -57,54 +73,56 @@ public class SectionPanel : Panel
         _iconService   = iconService;
         _launchService = launchService;
         _collapsed     = section.Collapsed;
-        // Fall back to a plain ShowDialog if no override is provided (e.g. in tests)
-        _showDialog = showDialogOverride ?? (dlg => dlg.ShowDialog());
+        _showDialog    = showDialogOverride ?? (d => d.ShowDialog());
 
-        BackColor    = SystemColors.Control;
-        ForeColor    = SystemColors.ControlText;
-        // Do NOT use AutoSize here – the FlowLayoutPanel host is TopDown, so each
-        // SectionPanel must have an explicit width that fills the host.  Width is
-        // set by the caller (MainForm) via SetWidth() whenever the form resizes.
+        BackColor    = SystemColors.Window;
+        ForeColor    = SystemColors.WindowText;
         AutoSize     = false;
-        Padding      = new Padding(0, 0, 0, 4);
+        Padding      = new Padding(0, 0, 0, 6);
 
-        // ── Header panel ──────────────────────────────────────────────────
+        // ── Header ───────────────────────────────────────────────────────
 
         _header = new Panel
         {
             Dock      = DockStyle.Top,
             Height    = 24,
-            BackColor = SystemColors.Control,
-            Cursor    = Cursors.Hand,
+            BackColor = Color.Transparent,
+            Cursor    = Cursors.SizeAll,   // hint that the section is draggable
         };
 
         _headerLabel = new Label
         {
-            Text      = section.Name,
-            Font      = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
-            ForeColor = SystemColors.ControlText,
+            Text      = section.Name + (_collapsed ? " ▶" : " ▼"),
+            Font      = new Font(SystemFonts.DefaultFont.FontFamily, 9f, FontStyle.Bold),
+            ForeColor = SystemColors.WindowText,
             BackColor = Color.Transparent,
             AutoSize  = false,
             Dock      = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
-            Padding   = new Padding(4, 0, 0, 0),
+            Padding   = new Padding(6, 0, 0, 0),
+            Cursor    = Cursors.Hand,
         };
         _header.Controls.Add(_headerLabel);
 
-        // ── Content area (flow of entry buttons or scratchpad) ────────────
+        // ── Content (entries or scratchpad) ──────────────────────────────
+        // Location is managed manually: always at (0, header.Height + AccentH)
+        // so it sits below the header and accent line.
+        // AutoSize=false; height is calculated by UpdateHeight().
 
         _content = new FlowLayoutPanel
         {
-            FlowDirection  = FlowDirection.LeftToRight,
-            WrapContents   = true,
-            AutoSize       = true,
-            AutoSizeMode   = AutoSizeMode.GrowAndShrink,
-            BackColor      = SystemColors.Control,
-            Visible        = !_collapsed,
+            Location      = new Point(0, _header.Height + AccentH),
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents  = true,
+            AutoSize      = false,
+            Height        = 0,
+            BackColor     = Color.Transparent,
+            Visible       = !_collapsed,
         };
 
+        // Add header first (DockStyle.Top), then content below
+        Controls.Add(_header);
         Controls.Add(_content);
-        Controls.Add(_header); // header on top (DockStyle.Top processed last)
 
         BuildContextMenu();
         WireHeaderEvents();
@@ -115,49 +133,40 @@ public class SectionPanel : Panel
             RebuildEntries();
     }
 
-    // ── Public API ──────────────────────────────────────────────────────────
+    // ── Public API ───────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Called by MainForm on resize so the panel and its content fill the host width.
+    /// Sets the panel width and repositions/resizes all children to match.
+    /// Called by MainForm whenever the form is resized or sections are rebuilt.
     /// </summary>
     public void SetWidth(int width)
     {
-        Width          = Math.Max(80, width);
-        _content.Width = Width;
+        width          = Math.Max(80, width);
+        Width          = width;
+        _content.Width = width;
         foreach (Control c in _content.Controls)
-            if (c is ScratchpadPanel sp)
-                sp.Width = Width;
-        // Height: header + content natural height
+            if (c is ScratchpadPanel sp) sp.Width = width;
         UpdateHeight();
     }
 
-    private void UpdateHeight()
-    {
-        int contentH = _collapsed ? 0 : _content.PreferredSize.Height;
-        Height = _header.Height + contentH + Padding.Vertical;
-    }
-
-    /// <summary>Propagates a new icon size to all child entry buttons.</summary>
+    /// <summary>Propagates a new icon size to all child controls.</summary>
     public void ApplyIconSize(int iconSize)
     {
-        _iconSize = iconSize;
-
-        // Scale header height proportionally
-        _header.Height = Math.Max(18, iconSize / 2);
+        _iconSize      = iconSize;
+        _header.Height = Math.Max(20, iconSize / 2);
         _headerLabel.Font = new Font(SystemFonts.DefaultFont.FontFamily,
-                                      Math.Max(7, iconSize / 5),
-                                      FontStyle.Bold);
+                                      Math.Max(8f, iconSize / 6f), FontStyle.Bold);
+        _content.Location = new Point(0, _header.Height + AccentH);
 
         foreach (Control c in _content.Controls)
         {
-            if (c is EntryButton eb)
-                eb.ApplyIconSize(iconSize, _displayMode);
-            else if (c is ScratchpadPanel sp)
-                sp.ApplyIconSize(iconSize);
+            if (c is EntryButton eb) eb.ApplyIconSize(iconSize, _displayMode);
+            else if (c is ScratchpadPanel sp) sp.ApplyIconSize(iconSize);
         }
+        UpdateHeight();
     }
 
-    /// <summary>Rebuilds or refreshes entry buttons after data changes.</summary>
+    /// <summary>Rebuilds entry buttons from the model (called after search filter).</summary>
     public void RebuildEntries()
     {
         _content.SuspendLayout();
@@ -176,17 +185,59 @@ public class SectionPanel : Panel
 
     public void SetDisplayMode(string mode)
     {
-        _displayMode                 = mode;
-        SectionModel.DisplayMode     = mode;
-
+        _displayMode         = mode;
+        SectionModel.DisplayMode = mode;
         foreach (Control c in _content.Controls)
-            if (c is EntryButton eb)
-                eb.ApplyIconSize(_iconSize, mode);
-
+            if (c is EntryButton eb) eb.ApplyIconSize(_iconSize, mode);
         _configService.SaveEntries();
+        UpdateHeight();
     }
 
-    // ── Entry button factory ────────────────────────────────────────────────
+    // ── Height management ────────────────────────────────────────────────────
+
+    private void UpdateHeight()
+    {
+        _content.Location = new Point(0, _header.Height + AccentH);
+
+        if (_collapsed)
+        {
+            _content.Visible = false;
+            Height = _header.Height + AccentH + Padding.Vertical;
+            return;
+        }
+
+        _content.Visible = true;
+
+        // Measure content height from the bottom of the lowest child control
+        int contentH = 0;
+        foreach (Control c in _content.Controls)
+            contentH = Math.Max(contentH, c.Bottom + c.Margin.Bottom);
+
+        // If the section is empty, show a small placeholder so the user can
+        // right-click it to add entries
+        contentH = Math.Max(contentH, 24);
+        _content.Height = contentH;
+
+        Height = _header.Height + AccentH + contentH + Padding.Vertical;
+    }
+
+    // ── Painting (accent line) ────────────────────────────────────────────────
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+
+        // Draw a 2px coloured accent line immediately below the header
+        int y = _header.Height;
+        try
+        {
+            using var pen = new Pen(ColorTranslator.FromHtml(SectionModel.AccentColor), AccentH);
+            e.Graphics.DrawLine(pen, 0, y, Width, y);
+        }
+        catch { /* ignore invalid colour */ }
+    }
+
+    // ── Entry button factory ─────────────────────────────────────────────────
 
     private EntryButton CreateEntryButton(Entry entry)
     {
@@ -194,17 +245,13 @@ public class SectionPanel : Panel
         {
             Margin = new Padding(2),
         };
-
-        btn.EditRequested       += (_, _) => OpenEditDialog(entry, btn);
-        btn.RemoveRequested     += (_, _) => RemoveEntry(entry, btn);
-        btn.OpenLocationRequested += (_, _) => LaunchService.OpenFileLocation(entry);
-        btn.MoveToSectionRequested += (_, sec) => MoveEntryToSection(entry, btn, sec);
-
-        // Drag-to-reorder support
+        btn.EditRequested             += (_, _) => OpenEditDialog(entry, btn);
+        btn.RemoveRequested           += (_, _) => RemoveEntry(entry, btn);
+        btn.OpenLocationRequested     += (_, _) => LaunchService.OpenFileLocation(entry);
+        btn.MoveToSectionRequested    += (_, sec) => MoveEntryToSection(entry, btn, sec);
         btn.MouseDown += OnEntryMouseDown;
         btn.MouseMove += OnEntryMouseMove;
         btn.MouseUp   += OnEntryMouseUp;
-
         return btn;
     }
 
@@ -216,88 +263,67 @@ public class SectionPanel : Panel
             Width = Width > 0 ? Width : 300,
         };
         _content.Controls.Add(sp);
+        UpdateHeight();
     }
 
-    // ── Header click → collapse/expand ─────────────────────────────────────
+    // ── Header: collapse / expand ────────────────────────────────────────────
 
     private void WireHeaderEvents()
     {
-        _header.Click += (_, _) => ToggleCollapse();
+        _header.Click      += (_, _) => ToggleCollapse();
         _headerLabel.Click += (_, _) => ToggleCollapse();
     }
 
     private void ToggleCollapse()
     {
-        _collapsed            = !_collapsed;
-        SectionModel.Collapsed = _collapsed;
-
-        // Simple show/hide animation: fade the content in/out
-        _content.Visible = !_collapsed;
+        _collapsed              = !_collapsed;
+        SectionModel.Collapsed  = _collapsed;
+        _headerLabel.Text       = SectionModel.Name + (_collapsed ? " ▶" : " ▼");
         _configService.SaveEntries();
         UpdateHeight();
-
-        // Repaint the header arrow hint
-        _headerLabel.Text = SectionModel.Name + (_collapsed ? " ▶" : " ▼");
-        _header.Invalidate();
     }
 
-    // ── Context menu ────────────────────────────────────────────────────────
+    // ── Context menu ─────────────────────────────────────────────────────────
 
     private void BuildContextMenu()
     {
-        var menu = new ContextMenuStrip();
+        var menu = new ContextMenuStrip
+        {
+            Font = new Font("Segoe UI", 9f),
+        };
 
-        var displayMenu = new ToolStripMenuItem("Display Mode");
-        displayMenu.DropDownItems.Add("Icons Only",        null, (_, _) => SetDisplayMode("icons_only"));
-        displayMenu.DropDownItems.Add("Icons and Labels",  null, (_, _) => SetDisplayMode("icons_labels"));
-        displayMenu.DropDownItems.Add("Labels Only",       null, (_, _) => SetDisplayMode("labels_only"));
-        menu.Items.Add(displayMenu);
+        var dispMenu = new ToolStripMenuItem("Display Mode");
+        dispMenu.DropDownItems.Add("Icons Only",       null, (_, _) => SetDisplayMode("icons_only"));
+        dispMenu.DropDownItems.Add("Icons and Labels", null, (_, _) => SetDisplayMode("icons_labels"));
+        dispMenu.DropDownItems.Add("Labels Only",      null, (_, _) => SetDisplayMode("labels_only"));
+        menu.Items.Add(dispMenu);
 
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Add Entry",          null, (_, _) => OpenAddEntryDialog());
-        menu.Items.Add("Rename Section",     null, (_, _) => RenameSection());
-        menu.Items.Add("Change Accent Color",null, (_, _) => ChangeAccentColor());
+        menu.Items.Add("Add Entry",           null, (_, _) => OpenAddEntryDialog());
+        menu.Items.Add("Rename Section",      null, (_, _) => RenameSection());
+        menu.Items.Add("Change Accent Color", null, (_, _) => ChangeAccentColor());
         menu.Items.Add("Convert to Scratchpad", null, (_, _) => ConvertToScratchpad());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Collapse All",       null, (_, _) => CollapseAll?.Invoke(this, EventArgs.Empty));
-        menu.Items.Add("Expand All",         null, (_, _) => ExpandAll?.Invoke(this, EventArgs.Empty));
+        menu.Items.Add("Collapse All", null, (_, _) => CollapseAll?.Invoke(this, EventArgs.Empty));
+        menu.Items.Add("Expand All",   null, (_, _) => ExpandAll?.Invoke(this, EventArgs.Empty));
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Remove Section",     null, OnRemoveSectionClicked);
+        menu.Items.Add("Remove Section", null, OnRemoveSectionClicked);
 
-        ContextMenuStrip       = menu;
-        _header.ContextMenuStrip = menu;
+        ContextMenuStrip          = menu;
+        _header.ContextMenuStrip  = menu;
         _headerLabel.ContextMenuStrip = menu;
     }
 
-    public event EventHandler? CollapseAll;
-    public event EventHandler? ExpandAll;
-    public event EventHandler? RemoveSectionRequested;
-
     private void OnRemoveSectionClicked(object? sender, EventArgs e)
     {
-        var r = MessageBox.Show($"Remove section \"{SectionModel.Name}\" and all its entries?",
-                                "Personal TaskBar", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        var r = MessageBox.Show(
+            $"Remove \"{SectionModel.Name}\" and all its entries?",
+            "Personal TaskBar", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
         if (r == DialogResult.Yes)
             RemoveSectionRequested?.Invoke(this, EventArgs.Empty);
     }
 
-    // ── Painting (accent line) ──────────────────────────────────────────────
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        base.OnPaint(e);
-
-        // Draw the accent line at the bottom of the header band
-        try
-        {
-            var color = ColorTranslator.FromHtml(SectionModel.AccentColor);
-            using var pen = new Pen(color, 2);
-            e.Graphics.DrawLine(pen, 0, _header.Bottom - 2, Width, _header.Bottom - 2);
-        }
-        catch { /* ignore invalid colour strings */ }
-    }
-
-    // ── Entry CRUD helpers ──────────────────────────────────────────────────
+    // ── Entry CRUD ───────────────────────────────────────────────────────────
 
     private void OpenAddEntryDialog()
     {
@@ -329,6 +355,7 @@ public class SectionPanel : Panel
         _content.Controls.Remove(btn);
         btn.Dispose();
         _configService.SaveEntries();
+        UpdateHeight();
         DataChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -340,22 +367,23 @@ public class SectionPanel : Panel
         _content.Controls.Remove(btn);
         btn.Dispose();
         _configService.SaveEntries();
+        UpdateHeight();
         DataChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    // ── Section rename / colour ─────────────────────────────────────────────
+    // ── Section rename / colour ──────────────────────────────────────────────
 
     private void RenameSection()
     {
         using var dlg = new Form
         {
-            Text            = "Rename Section",
-            Size            = new Size(300, 120),
+            Text = "Rename Section", Size = new Size(300, 110),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition   = FormStartPosition.CenterParent,
-            MaximizeBox     = false, MinimizeBox = false,
+            MaximizeBox = false, MinimizeBox = false,
+            Font = new Font("Segoe UI", 9f),
         };
-        var tb = new TextBox { Text = SectionModel.Name, Dock = DockStyle.Top, Margin = new Padding(8) };
+        var tb = new TextBox { Text = SectionModel.Name, Dock = DockStyle.Top };
         var ok = new Button  { Text = "OK", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom };
         dlg.Controls.AddRange(new Control[] { ok, tb });
         dlg.AcceptButton = ok;
@@ -384,7 +412,6 @@ public class SectionPanel : Panel
         var r = MessageBox.Show(
             "Convert to Scratchpad? All entries in this section will be removed.",
             "Personal TaskBar", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-
         if (r != DialogResult.Yes) return;
 
         SectionModel.Type = "scratchpad";
@@ -395,22 +422,19 @@ public class SectionPanel : Panel
         DataChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    // ── Drag-to-reorder entries ─────────────────────────────────────────────
+    // ── Drag-to-reorder entries ──────────────────────────────────────────────
 
     private void OnEntryMouseDown(object? sender, MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Left || sender is not EntryButton btn) return;
-        _draggedEntry   = btn;
-        _dragStartIndex = _content.Controls.IndexOf(btn);
+        _draggedEntry = btn;
     }
 
     private void OnEntryMouseMove(object? sender, MouseEventArgs e)
     {
         if (_draggedEntry == null || e.Button != MouseButtons.Left) return;
-
-        // Determine which slot the mouse is over and swap
-        var pos      = _content.PointToClient(MousePosition);
-        var target   = _content.GetChildAtPoint(pos) as EntryButton;
+        var pos    = _content.PointToClient(MousePosition);
+        var target = _content.GetChildAtPoint(pos) as EntryButton;
         if (target == null || target == _draggedEntry) return;
 
         int from = _content.Controls.IndexOf(_draggedEntry);
@@ -418,8 +442,6 @@ public class SectionPanel : Panel
         if (from == to) return;
 
         _content.Controls.SetChildIndex(_draggedEntry, to);
-
-        // Mirror reorder in the model
         var entries = SectionModel.Entries;
         var item    = entries[from];
         entries.RemoveAt(from);
@@ -433,7 +455,7 @@ public class SectionPanel : Panel
         _draggedEntry = null;
     }
 
-    // ── Helpers ─────────────────────────────────────────────────────────────
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static Color TryParseColor(string hex)
     {

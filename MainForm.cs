@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Linq;
 using System.Windows.Forms;
 using Personal_TaskBar.Models;
@@ -10,18 +11,18 @@ using Personal_TaskBar.UI;
 namespace Personal_TaskBar;
 
 /// <summary>
-/// The main application window.
-/// Borderless, always-on-top floating toolbar that can dock to any screen edge.
-/// All window behaviour (drag, snap-to-dock, resize, multi-monitor) lives here.
+/// Main application window – borderless, always-on-top floating toolbar.
+/// Drag is handled via the reliable ReleaseCapture+SendMessage(WM_NCLBUTTONDOWN)
+/// pattern so that every empty surface on the bar can initiate a native OS move.
 /// </summary>
 public class MainForm : Form
 {
     // ── Services ────────────────────────────────────────────────────────────
 
-    private readonly ConfigService  _configService;
-    private readonly IconService    _iconService;
-    private readonly LaunchService  _launchService;
-    private          HotkeyService? _hotkeyService;
+    private readonly ConfigService    _configService;
+    private readonly IconService      _iconService;
+    private readonly LaunchService    _launchService;
+    private          HotkeyService?   _hotkeyService;
 
     // ── Hotkey IDs ──────────────────────────────────────────────────────────
 
@@ -30,29 +31,36 @@ public class MainForm : Form
 
     // ── UI ──────────────────────────────────────────────────────────────────
 
-    private readonly Panel            _controlStrip;   // lock/gear/hide buttons
-    private readonly FlowLayoutPanel  _sectionsHost;   // houses all SectionPanels
-    private readonly SearchOverlay    _searchOverlay;
+    private readonly Panel              _controlStrip;
+    private readonly FlowLayoutPanel    _sectionsHost;
+    private readonly SearchOverlay      _searchOverlay;
     private readonly List<SectionPanel> _sectionPanels = new();
+    private          NotifyIcon?        _trayIcon;
 
-    // Control-strip buttons
-    private readonly Button _btnAlwaysOnTop;
-    private readonly Button _btnSettings;
-    private readonly Button _btnHide;
-    private readonly Button _btnSearch;
-    private readonly Button _btnAddSection;
+    // Control-strip buttons (Segoe MDL2 Assets glyphs)
+    private readonly Button _btnPin;       //  pin / always-on-top
+    private readonly Button _btnSearch;    //  search
+    private readonly Button _btnAdd;       //  add section
+    private readonly Button _btnSettings;  //  settings
+    private readonly Button _btnHide;      //  hide
 
-    // ── Dock / resize state ─────────────────────────────────────────────────
+    // ── Dock / resize constants ─────────────────────────────────────────────
 
-    private const int DockSnapThreshold = 20; // pixels from screen edge to trigger snap
-    private const int ResizeBorder      = 6;  // pixels from form edge that count as resize grip
+    private const int DockSnapThreshold = 20;
+    private const int ResizeBorder      = 6;
 
-    // Default floating size used when undocking from a full-edge dock
-    private Size DefaultFloatingSize => new(Math.Max(200, _configService.Config.Window.IconSize * 5),
-                                            Math.Max(80,  _configService.Config.Window.IconSize * 2));
+    private const int WM_NCHITTEST   = 0x0084;
+    private const int WM_EXITSIZEMOVE = 0x0232;
 
-    // System tray icon – gives user a way to show/exit when the window is hidden
-    private NotifyIcon? _trayIcon;
+    private const int HTCLIENT      = 1;
+    private const int HTLEFT        = 10, HTRIGHT       = 11;
+    private const int HTTOP         = 12, HTBOTTOM      = 15;
+    private const int HTTOPLEFT     = 13, HTTOPRIGHT    = 14;
+    private const int HTBOTTOMLEFT  = 16, HTBOTTOMRIGHT = 17;
+
+    private Size DefaultFloatingSize => new(
+        Math.Max(240, _configService.Config.Window.IconSize * 6),
+        Math.Max(120, _configService.Config.Window.IconSize * 3));
 
     // ── Constructor ─────────────────────────────────────────────────────────
 
@@ -62,32 +70,38 @@ public class MainForm : Form
         _iconService   = new IconService();
         _launchService = new LaunchService(configService);
 
-        // ── Window setup ─────────────────────────────────────────────────
+        // ── Window properties ─────────────────────────────────────────────
 
         FormBorderStyle = FormBorderStyle.None;
         TopMost         = configService.Config.Window.AlwaysOnTop;
-        ShowInTaskbar   = true;  // visible in taskbar so user can find/click the bar
+        ShowInTaskbar   = true;
         DoubleBuffered  = true;
-        BackColor       = SystemColors.Control;
-        ForeColor       = SystemColors.ControlText;
+        BackColor       = SystemColors.Window;
+        ForeColor       = SystemColors.WindowText;
+        // Segoe UI is the Windows 11 system font; fall back gracefully if unavailable
+        Font            = TryFont("Segoe UI", 9f) ?? SystemFonts.DefaultFont;
         Text            = "Personal TaskBar";
+        MinimumSize     = new Size(200, 120);
 
         RestoreWindowGeometry();
 
-        // ── Control strip (always-visible band of utility buttons) ────────
+        // ── Control strip ────────────────────────────────────────────────
+        // Thin toolbar at the top; same background as the window so it blends in.
+        // A single 1px hairline at the bottom separates it from the content area.
 
-        _btnAlwaysOnTop = MakeStripButton("🔒", "Toggle always-on-top");
-        _btnSettings    = MakeStripButton("⚙",  "Settings");
-        _btnHide        = MakeStripButton("✕",  "Hide bar");
-        _btnSearch      = MakeStripButton("🔍",  "Search (Ctrl+Space)");
-        _btnAddSection  = MakeStripButton("+",  "Add section");
+        _btnPin      = MakeStripButton("", "Toggle always-on-top");
+        _btnSearch   = MakeStripButton("", "Search  (Ctrl+Space)");
+        _btnAdd      = MakeStripButton("", "Add section");
+        _btnSettings = MakeStripButton("", "Settings");
+        _btnHide     = MakeStripButton("", "Hide  (tray icon to restore)");
 
         _controlStrip = new Panel
         {
             Dock      = DockStyle.Top,
-            Height    = 24,
-            BackColor = SystemColors.ControlDark,
+            Height    = 30,
+            BackColor = SystemColors.Window,
         };
+        _controlStrip.Paint += PaintStripSeparator;
 
         var stripFlow = new FlowLayoutPanel
         {
@@ -95,22 +109,21 @@ public class MainForm : Form
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents  = false,
             AutoSize      = false,
-            BackColor     = SystemColors.ControlDark,
+            BackColor     = Color.Transparent,
+            Padding       = new Padding(1),
         };
         stripFlow.Controls.AddRange(new Control[]
-            { _btnAlwaysOnTop, _btnSearch, _btnAddSection, _btnSettings, _btnHide });
+            { _btnPin, _btnSearch, _btnAdd, _btnSettings, _btnHide });
         _controlStrip.Controls.Add(stripFlow);
 
-        // ── Search overlay (hidden by default) ────────────────────────────
+        // ── Search overlay ────────────────────────────────────────────────
 
-        _searchOverlay              = new SearchOverlay(_configService, _launchService);
-        _searchOverlay.Visible      = false;
-        _searchOverlay.CloseRequested  += (_, _) => CloseSearch();
-        _searchOverlay.FilterChanged   += OnSearchFilter;
+        _searchOverlay         = new SearchOverlay(_configService, _launchService);
+        _searchOverlay.Visible = false;
+        _searchOverlay.CloseRequested += (_, _) => CloseSearch();
+        _searchOverlay.FilterChanged  += OnSearchFilter;
 
         // ── Sections host ─────────────────────────────────────────────────
-        // TopDown flow so sections stack vertically regardless of form width.
-        // AutoScroll on the outer form handles overflow when content is taller than the window.
 
         _sectionsHost = new FlowLayoutPanel
         {
@@ -119,29 +132,30 @@ public class MainForm : Form
             FlowDirection = FlowDirection.TopDown,
             WrapContents  = false,
             AutoScroll    = true,
-            BackColor     = SystemColors.Control,
+            BackColor     = SystemColors.Window,
+            Padding       = new Padding(4, 4, 4, 4),
         };
 
-        // Add controls from top to bottom
+        // Add in reverse DockStyle priority: Fill first, then Top controls
         Controls.Add(_sectionsHost);
         Controls.Add(_searchOverlay);
         Controls.Add(_controlStrip);
 
         // ── Wire strip buttons ────────────────────────────────────────────
 
-        _btnAlwaysOnTop.Click += (_, _) => ToggleAlwaysOnTop();
-        _btnSettings.Click    += (_, _) => OpenSettings();
-        _btnHide.Click        += (_, _) => Hide();
-        _btnSearch.Click      += (_, _) => OpenSearch();
-        _btnAddSection.Click  += (_, _) => AddSection();
+        _btnPin.Click      += (_, _) => ToggleAlwaysOnTop();
+        _btnSettings.Click += (_, _) => OpenSettings();
+        _btnHide.Click     += (_, _) => Hide();
+        _btnSearch.Click   += (_, _) => OpenSearch();
+        _btnAdd.Click      += (_, _) => AddSection();
 
-        // ── System tray icon ──────────────────────────────────────────────
-        // Provides Show/Hide and Exit even when the main window is hidden.
+        // ── Tray icon ─────────────────────────────────────────────────────
+        // Always available so the user can show the bar or exit even when hidden.
 
         var trayMenu = new ContextMenuStrip();
-        trayMenu.Items.Add("Show / Hide",  null, (_, _) => ToggleVisibility());
+        trayMenu.Items.Add("Show / Hide", null, (_, _) => ToggleVisibility());
         trayMenu.Items.Add(new ToolStripSeparator());
-        trayMenu.Items.Add("Exit", null, (_, _) => ExitApp());
+        trayMenu.Items.Add("Exit",        null, (_, _) => ExitApp());
 
         _trayIcon = new NotifyIcon
         {
@@ -152,80 +166,93 @@ public class MainForm : Form
         };
         _trayIcon.DoubleClick += (_, _) => ToggleVisibility();
 
-        // ── Build section panels ──────────────────────────────────────────
+        // ── Enable drag on every non-interactive surface ──────────────────
+        // Uses ReleaseCapture + SendMessage(WM_NCLBUTTONDOWN) so the OS owns
+        // the move loop.  This works even when buttons/panels intercept clicks.
+        EnableDragOn(this);
+
+        // ── Sections ──────────────────────────────────────────────────────
 
         RebuildSections();
-
-        // Preload icons at startup so first render is instant
         _iconService.Preload(_configService.Sections, _configService.Config.Window.IconSize);
     }
 
-    // ── WndProc override (hotkeys + resize + single-instance activation) ────
+    // ── DWM rounded corners + shadow ─────────────────────────────────────────
 
-    // WM_NCHITTEST return values for resize edges
-    private const int WM_NCHITTEST   = 0x0084;
-    private const int HTLEFT         = 10;
-    private const int HTRIGHT        = 11;
-    private const int HTTOP          = 12;
-    private const int HTTOPLEFT      = 13;
-    private const int HTTOPRIGHT     = 14;
-    private const int HTBOTTOM       = 15;
-    private const int HTBOTTOMLEFT   = 16;
-    private const int HTBOTTOMRIGHT  = 17;
-    private const int HTCLIENT       = 1;
-    private const int HTCAPTION      = 2;
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyDwmStyle();
+        RegisterHotkeys();
+    }
+
+    private void ApplyDwmStyle()
+    {
+        try
+        {
+            // Rounded corners – Windows 11 only (silently ignored on Win10)
+            int round = NativeMethods.DWMWCP_ROUND;
+            NativeMethods.DwmSetWindowAttribute(Handle,
+                NativeMethods.DWMWA_WINDOW_CORNER_PREFERENCE, ref round, sizeof(int));
+
+            // Remove the DWM border so it doesn't fight with the window's own border
+            int noBorder = NativeMethods.DWMWA_COLOR_NONE;
+            NativeMethods.DwmSetWindowAttribute(Handle,
+                NativeMethods.DWMWA_BORDER_COLOR, ref noBorder, sizeof(int));
+        }
+        catch { /* DWM not available on this OS version */ }
+    }
+
+    // Draw the hairline separator at the bottom of the control strip
+    private void PaintStripSeparator(object? sender, PaintEventArgs e)
+    {
+        if (sender is not Control c) return;
+        using var pen = new Pen(SystemColors.ControlLight, 1);
+        e.Graphics.DrawLine(pen, 0, c.Height - 1, c.Width, c.Height - 1);
+    }
+
+    // ── WndProc (hotkeys + resize edges + single-instance) ───────────────────
+
+    private const int HTCAPTION = 2; // needed for EnableDragOn
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == WM_NCHITTEST)
+        if (m.Msg == WM_NCHITTEST && _configService != null)
         {
-            // Decode screen coords – use signed shorts to handle negative values on
-            // monitors to the left/above the primary.
-            int  lp     = m.LParam.ToInt32();
-            var  screen = new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
-            var  cursor = PointToClient(screen);
+            // Decode screen coordinates; use signed shorts for multi-monitor support
+            int lp     = m.LParam.ToInt32();
+            var screen = new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
+            var cursor = PointToClient(screen);
 
             bool left   = cursor.X <= ResizeBorder;
             bool right  = cursor.X >= ClientSize.Width  - ResizeBorder;
             bool top    = cursor.Y <= ResizeBorder;
             bool bottom = cursor.Y >= ClientSize.Height - ResizeBorder;
 
-            var dock = _configService?.Config.Window.Dock ?? "none";
+            var dock = _configService.Config.Window.Dock;
 
-            // Suppress resize on edges that are pinned to the screen
+            // Don't offer a resize grip on edges that are glued to the screen
             if (dock == "top")    top    = false;
             if (dock == "bottom") bottom = false;
             if (dock == "left")   left   = false;
             if (dock == "right")  right  = false;
 
             int hit = HTCLIENT;
-            if (top    && left)   hit = HTTOPLEFT;
-            else if (top  && right)  hit = HTTOPRIGHT;
-            else if (bottom && left)  hit = HTBOTTOMLEFT;
-            else if (bottom && right) hit = HTBOTTOMRIGHT;
-            else if (left)   hit = HTLEFT;
-            else if (right)  hit = HTRIGHT;
-            else if (top)    hit = HTTOP;
-            else if (bottom) hit = HTBOTTOM;
+            if      (top    && left)   hit = HTTOPLEFT;
+            else if (top    && right)  hit = HTTOPRIGHT;
+            else if (bottom && left)   hit = HTBOTTOMLEFT;
+            else if (bottom && right)  hit = HTBOTTOMRIGHT;
+            else if (left)             hit = HTLEFT;
+            else if (right)            hit = HTRIGHT;
+            else if (top)              hit = HTTOP;
+            else if (bottom)           hit = HTBOTTOM;
 
             if (hit != HTCLIENT) { m.Result = new IntPtr(hit); return; }
-
-            // If the cursor is not over a resize edge and not over an interactive
-            // control, tell Windows this is the title bar. That gives us free native
-            // drag-to-move AND the snap-on-release via WM_MOVING without any manual
-            // MouseMove tracking.
-            if (!IsInteractiveControlAt(cursor))
-            {
-                m.Result = new IntPtr(HTCAPTION);
-                return;
-            }
         }
 
-        // WM_MOVING fires continuously while the user is dragging; use it to snap
-        // the window to screen edges the moment the mouse button is released.
-        const int WM_EXITSIZEMOVE = 0x0232;
         if (m.Msg == WM_EXITSIZEMOVE)
         {
+            // Fires when the user finishes a native move or resize
             OnMoveOrResizeEnded();
         }
 
@@ -235,7 +262,6 @@ public class MainForm : Form
         }
         else if (m.Msg == (int)NativeMethods.WM_ACTIVATE_INSTANCE)
         {
-            // A second instance broadcast this to bring us forward
             if (!Visible) Show();
             NativeMethods.ShowWindow(Handle, NativeMethods.SW_RESTORE);
             NativeMethods.SetForegroundWindow(Handle);
@@ -244,13 +270,59 @@ public class MainForm : Form
         base.WndProc(ref m);
     }
 
-    // ── Handle creation → register hotkeys ─────────────────────────────────
+    // ── Drag via ReleaseCapture + SendMessage ─────────────────────────────────
 
-    protected override void OnHandleCreated(EventArgs e)
+    /// <summary>
+    /// Recursively subscribes MouseDown on every non-interactive container so
+    /// clicking any empty area of the bar starts a native OS drag loop.
+    /// </summary>
+    private void EnableDragOn(Control c)
     {
-        base.OnHandleCreated(e);
-        RegisterHotkeys();
+        // Interactive controls need their own mouse handling; skip them.
+        if (c is Button or TextBox or RichTextBox or TrackBar
+               or ComboBox or CheckBox or RadioButton or ScrollBar)
+            return;
+
+        c.MouseDown += OnSurfaceMouseDown;
+
+        foreach (Control child in c.Controls)
+            EnableDragOn(child);
     }
+
+    private void OnSurfaceMouseDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+
+        // When undocking from a full-edge dock, shrink back to a floating size
+        // BEFORE the drag starts so the window isn't screen-width during the move.
+        var dock = _configService.Config.Window.Dock;
+        if (dock is "top" or "bottom")
+        {
+            Width = DefaultFloatingSize.Width;
+            _configService.Config.Window.Dock = "none";
+        }
+        else if (dock is "left" or "right")
+        {
+            Height = DefaultFloatingSize.Height;
+            _configService.Config.Window.Dock = "none";
+        }
+
+        // Hand the move loop to Windows. SendMessage blocks until mouse-up,
+        // at which point WM_EXITSIZEMOVE fires and we snap + save.
+        NativeMethods.ReleaseCapture();
+        NativeMethods.SendMessage(Handle, NativeMethods.WM_NCLBUTTONDOWN,
+            new IntPtr(NativeMethods.HTCAPTION), IntPtr.Zero);
+    }
+
+    // ── Post-move / resize snap ───────────────────────────────────────────────
+
+    private void OnMoveOrResizeEnded()
+    {
+        TrySnap();
+        SaveWindowGeometry();
+    }
+
+    // ── Hotkeys ──────────────────────────────────────────────────────────────
 
     private void RegisterHotkeys()
     {
@@ -259,71 +331,57 @@ public class MainForm : Form
 
         var cfg = _configService.Config.Hotkeys;
 
-        // Toggle visibility hotkey
         if (HotkeyService.TryParse(cfg.ToggleVisibility, out var mods, out var vk))
         {
             try { _hotToggleId = _hotkeyService.Register(mods, vk, ToggleVisibility); }
-            catch { /* key in use – silently ignore */ }
+            catch { /* key already in use */ }
         }
-
-        // Search hotkey
         if (HotkeyService.TryParse(cfg.Search, out mods, out vk))
         {
             try { _hotSearchId = _hotkeyService.Register(mods, vk, OpenSearch); }
-            catch { /* key in use */ }
+            catch { /* key already in use */ }
         }
     }
 
-    // ── Window geometry ─────────────────────────────────────────────────────
+    // ── Window geometry ───────────────────────────────────────────────────────
 
     private void RestoreWindowGeometry()
     {
-        var wc = _configService.Config.Window;
-
-        // Validate that the saved monitor index is still present
+        var wc      = _configService.Config.Window;
         var screens = Screen.AllScreens;
         var screen  = wc.Monitor < screens.Length ? screens[wc.Monitor] : Screen.PrimaryScreen!;
+        var wa      = screen.WorkingArea;
 
-        // Clamp position to the target screen
-        int x = Math.Clamp(wc.X, screen.WorkingArea.Left, screen.WorkingArea.Right  - wc.Width);
-        int y = Math.Clamp(wc.Y, screen.WorkingArea.Top,  screen.WorkingArea.Bottom - wc.Height);
-
-        Location = new Point(x, y);
-
-        // Clamp saved size so a stale full-screen value doesn't make the bar unusable.
-        // Docked positions override these anyway via ApplyDock below.
-        var wa    = screen.WorkingArea;
-        int safeW = wc.Dock is "top" or "bottom" ? wa.Width  : Math.Clamp(wc.Width,  150, wa.Width  / 2);
-        int safeH = wc.Dock is "left" or "right"  ? wa.Height : Math.Clamp(wc.Height, 50,  wa.Height / 2);
+        // Clamp to a sensible floating size (docked positions override via ApplyDock)
+        int safeW = wc.Dock is "top" or "bottom" ? wa.Width
+                  : Math.Clamp(wc.Width,  200, wa.Width  / 2);
+        int safeH = wc.Dock is "left" or "right"  ? wa.Height
+                  : Math.Clamp(wc.Height,  120, wa.Height / 2);
         Size = new Size(safeW, safeH);
 
-        // Re-apply dock if previously docked
+        int x = Math.Clamp(wc.X, wa.Left, Math.Max(wa.Left, wa.Right  - Width));
+        int y = Math.Clamp(wc.Y, wa.Top,  Math.Max(wa.Top,  wa.Bottom - Height));
+        Location = new Point(x, y);
+
         if (wc.Dock != "none")
             ApplyDock(wc.Dock, screen);
     }
 
     private void SaveWindowGeometry()
     {
-        var wc   = _configService.Config.Window;
-        wc.X     = Location.X;
-        wc.Y     = Location.Y;
-        wc.Width = Width;
-        wc.Height= Height;
+        var wc    = _configService.Config.Window;
+        wc.X      = Location.X;
+        wc.Y      = Location.Y;
+        wc.Width  = Width;
+        wc.Height = Height;
 
-        // Identify which monitor the window is on
-        var screen = Screen.FromControl(this);
-        wc.Monitor = Array.IndexOf(Screen.AllScreens, screen);
-        if (wc.Monitor < 0) wc.Monitor = 0;
-
+        var screen  = Screen.FromControl(this);
+        wc.Monitor  = Math.Max(0, Array.IndexOf(Screen.AllScreens, screen));
         _configService.SaveConfig();
     }
 
-    // ── Dock logic ──────────────────────────────────────────────────────────
+    // ── Dock ─────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Checks whether the window is close enough to a screen edge to snap to it.
-    /// Called at the end of every drag operation.
-    /// </summary>
     private void TrySnap()
     {
         var screen = Screen.FromControl(this);
@@ -332,93 +390,32 @@ public class MainForm : Form
         var sz     = Size;
 
         string dock = "none";
-
-        if (loc.Y - wa.Top <= DockSnapThreshold)              dock = "top";
-        else if (wa.Bottom - (loc.Y + sz.Height) <= DockSnapThreshold) dock = "bottom";
-        else if (loc.X - wa.Left <= DockSnapThreshold)        dock = "left";
-        else if (wa.Right - (loc.X + sz.Width) <= DockSnapThreshold)   dock = "right";
+        if      (loc.Y - wa.Top                    <= DockSnapThreshold) dock = "top";
+        else if (wa.Bottom - (loc.Y + sz.Height)   <= DockSnapThreshold) dock = "bottom";
+        else if (loc.X - wa.Left                   <= DockSnapThreshold) dock = "left";
+        else if (wa.Right  - (loc.X + sz.Width)    <= DockSnapThreshold) dock = "right";
 
         _configService.Config.Window.Dock = dock;
-
-        if (dock != "none")
-            ApplyDock(dock, screen);
+        if (dock != "none") ApplyDock(dock, screen);
     }
 
     private void ApplyDock(string dock, Screen screen)
     {
         var wa = screen.WorkingArea;
-
         switch (dock)
         {
-            case "top":
-                Location = new Point(wa.Left, wa.Top);
-                Width    = wa.Width;
-                break;
-            case "bottom":
-                Location = new Point(wa.Left, wa.Bottom - Height);
-                Width    = wa.Width;
-                break;
-            case "left":
-                Location = new Point(wa.Left, wa.Top);
-                Height   = wa.Height;
-                break;
-            case "right":
-                Location = new Point(wa.Right - Width, wa.Top);
-                Height   = wa.Height;
-                break;
+            case "top":    Location = new Point(wa.Left, wa.Top);              Width  = wa.Width;  break;
+            case "bottom": Location = new Point(wa.Left, wa.Bottom - Height);  Width  = wa.Width;  break;
+            case "left":   Location = new Point(wa.Left, wa.Top);              Height = wa.Height; break;
+            case "right":  Location = new Point(wa.Right - Width, wa.Top);     Height = wa.Height; break;
         }
     }
 
-    // ── Native-drag helpers ─────────────────────────────────────────────────
-
-    /// <summary>
-    /// Returns true if there is an interactive control (button, textbox, etc.)
-    /// at the given client-coordinate point.  Used by WM_NCHITTEST to decide
-    /// whether to return HTCAPTION (drag) or HTCLIENT (normal input).
-    /// </summary>
-    private bool IsInteractiveControlAt(Point clientPt)
-    {
-        // Walk the control tree from this form down to the deepest child
-        Control current = this;
-        while (true)
-        {
-            var child = current.GetChildAtPoint(
-                current == this ? clientPt : current.PointToClient(PointToScreen(clientPt)));
-            if (child == null) break;
-            if (child is Button or TextBox or RichTextBox or TrackBar
-                      or ComboBox or CheckBox or RadioButton or ScrollBar)
-                return true;
-            current = child;
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// Called when the user finishes a move or resize (WM_EXITSIZEMOVE).
-    /// Handles snap-to-dock and saves geometry.
-    /// </summary>
-    private void OnMoveOrResizeEnded()
-    {
-        var prevDock = _configService.Config.Window.Dock;
-
-        // Reset full-edge-dock size when dragging away from a docked position
-        if (prevDock is "top" or "bottom")
-            Width = DefaultFloatingSize.Width;
-        else if (prevDock is "left" or "right")
-            Height = DefaultFloatingSize.Height;
-
-        _configService.Config.Window.Dock = "none";
-        TrySnap();
-        SaveWindowGeometry();
-    }
-
-    // ── Resize override ─────────────────────────────────────────────────────
+    // ── Resize override ───────────────────────────────────────────────────────
 
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        // Guard: OnResize fires during RestoreWindowGeometry() which is called
-        // before _sectionsHost and _sectionPanels are assigned.
         if (_sectionsHost == null || _sectionPanels == null) return;
 
         int w = SectionWidth();
@@ -427,25 +424,41 @@ public class MainForm : Form
         SaveWindowGeometry();
     }
 
-    /// <summary>Width available for section panels inside the sections host.</summary>
-    private int SectionWidth() =>
-        Math.Max(80, _sectionsHost.ClientSize.Width
-                     - (_sectionsHost.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0));
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        // Force a width update now that the form is laid out and ClientSize is valid
+        int w = SectionWidth();
+        foreach (var sp in _sectionPanels)
+            sp.SetWidth(w);
+        // Re-subscribe drag to any controls that were built before the form was shown
+        EnableDragOn(this);
+    }
 
-    // ── Sections ────────────────────────────────────────────────────────────
+    private int SectionWidth()
+    {
+        int w = _sectionsHost?.ClientSize.Width ?? 0;
+        // Fall back to saved config width during construction (ClientSize may be 0)
+        if (w < 10)
+            w = Math.Max(80, _configService.Config.Window.Width
+                             - (_sectionsHost?.Padding.Horizontal ?? 8));
+        if (_sectionsHost?.VerticalScroll.Visible == true)
+            w -= SystemInformation.VerticalScrollBarWidth;
+        return Math.Max(80, w);
+    }
+
+    // ── Sections ─────────────────────────────────────────────────────────────
 
     private void RebuildSections()
     {
         _sectionsHost.SuspendLayout();
-
-        foreach (var sp in _sectionPanels)
-            sp.Dispose();
+        foreach (var sp in _sectionPanels) sp.Dispose();
         _sectionPanels.Clear();
         _sectionsHost.Controls.Clear();
 
-        foreach (var section in _configService.Sections)
+        foreach (var sec in _configService.Sections)
         {
-            var panel = CreateSectionPanel(section);
+            var panel = CreateSectionPanel(sec);
             _sectionPanels.Add(panel);
             _sectionsHost.Controls.Add(panel);
         }
@@ -467,7 +480,7 @@ public class MainForm : Form
             _configService.SaveEntries();
             RebuildSections();
         };
-        panel.DataChanged += (_, _) => { /* sections save themselves */ };
+        panel.DataChanged += (_, _) => EnableDragOn(panel); // re-subscribe after new entry buttons
 
         return panel;
     }
@@ -476,11 +489,11 @@ public class MainForm : Form
     {
         using var dlg = new Form
         {
-            Text            = "Add Section",
-            Size            = new Size(280, 110),
+            Text = "Add Section", Size = new Size(280, 110),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition   = FormStartPosition.CenterParent,
-            MaximizeBox     = false, MinimizeBox = false,
+            MaximizeBox = false, MinimizeBox = false,
+            Font = Font,
         };
         var tb = new TextBox { Text = "New Section", Dock = DockStyle.Top, Margin = new Padding(8) };
         var ok = new Button  { Text = "Add", DialogResult = DialogResult.OK, Dock = DockStyle.Bottom };
@@ -497,76 +510,66 @@ public class MainForm : Form
         var panel = CreateSectionPanel(newSection);
         _sectionPanels.Add(panel);
         _sectionsHost.Controls.Add(panel);
+        EnableDragOn(panel);         // subscribe drag to new panel's surfaces
+        _sectionsHost.PerformLayout();
     }
-
-    // ── Collapse / expand all ───────────────────────────────────────────────
 
     private void CollapseAllSections()
     {
-        foreach (var sp in _sectionPanels)
-            sp.SectionModel.Collapsed = true;
+        foreach (var sp in _sectionPanels) sp.SectionModel.Collapsed = true;
         _configService.SaveEntries();
         RebuildSections();
     }
 
     private void ExpandAllSections()
     {
-        foreach (var sp in _sectionPanels)
-            sp.SectionModel.Collapsed = false;
+        foreach (var sp in _sectionPanels) sp.SectionModel.Collapsed = false;
         _configService.SaveEntries();
         RebuildSections();
     }
 
-    // ── Dialog helper (suspend TopMost so dialogs aren't hidden behind the bar) ──
+    // ── Dialog helper (suspend TopMost so dialogs appear on top) ─────────────
 
-    /// <summary>
-    /// Shows a dialog while temporarily suspending TopMost so the dialog is not
-    /// covered by the always-on-top main window.  TopMost is restored afterwards.
-    /// </summary>
     public DialogResult ShowDialogSafe(Form dlg)
     {
-        bool wasTopMost = TopMost;
-        TopMost = false;
+        bool was = TopMost;
+        TopMost  = false;
         try     { return dlg.ShowDialog(this); }
-        finally { TopMost = wasTopMost; }
+        finally { TopMost = was; }
     }
 
-    // ── Always-on-top toggle ─────────────────────────────────────────────────
+    // ── Always-on-top ─────────────────────────────────────────────────────────
 
     private void ToggleAlwaysOnTop()
     {
-        TopMost = !TopMost;
+        TopMost                              = !TopMost;
         _configService.Config.Window.AlwaysOnTop = TopMost;
-        _btnAlwaysOnTop.Text = TopMost ? "🔒" : "🔓";
+        // Segoe MDL2: E718 = pin, E77A = unpin
+        _btnPin.Text = TopMost ? "" : "";
         _configService.SaveConfig();
     }
 
-    // ── Visibility toggle (hotkey) ───────────────────────────────────────────
+    // ── Visibility ────────────────────────────────────────────────────────────
 
     private void ToggleVisibility()
     {
-        if (Visible) Hide();
-        else
-        {
-            Show();
-            NativeMethods.SetForegroundWindow(Handle);
-        }
+        if (Visible) { Hide(); return; }
+        Show();
+        NativeMethods.SetForegroundWindow(Handle);
     }
 
-    // ── Settings ────────────────────────────────────────────────────────────
+    // ── Settings ──────────────────────────────────────────────────────────────
 
     private void OpenSettings()
     {
         using var dlg = new SettingsForm(_configService);
-
-        dlg.IconSizeChanged   += (_, size) => ApplyIconSize(size);
-        dlg.AlwaysOnTopChanged += (_, top) => { TopMost = top; };
-        dlg.HotkeysChanged    += (_, _)    => RegisterHotkeys();
-
+        dlg.IconSizeChanged    += (_, size) => ApplyIconSize(size);
+        dlg.AlwaysOnTopChanged += (_, top)  => { TopMost = top; };
+        dlg.HotkeysChanged     += (_, _)    => RegisterHotkeys();
         ShowDialogSafe(dlg);
     }
 
-    // ── Search ──────────────────────────────────────────────────────────────
+    // ── Search ────────────────────────────────────────────────────────────────
 
     private void OpenSearch()
     {
@@ -577,46 +580,32 @@ public class MainForm : Form
     private void CloseSearch()
     {
         _searchOverlay.Deactivate();
-        // Restore all sections
-        foreach (var sp in _sectionPanels)
-        {
-            sp.Visible = true;
-            sp.RebuildEntries();
-        }
+        foreach (var sp in _sectionPanels) { sp.Visible = true; sp.RebuildEntries(); }
     }
 
     private void OnSearchFilter(object? sender, string filter)
     {
         if (string.IsNullOrWhiteSpace(filter))
         {
-            foreach (var sp in _sectionPanels)
-                sp.Visible = true;
+            foreach (var sp in _sectionPanels) sp.Visible = true;
             return;
         }
-
         foreach (var sp in _sectionPanels)
-        {
-            bool anyMatch = sp.SectionModel.Entries
+            sp.Visible = sp.SectionModel.Entries
                 .Any(e => e.Name.Contains(filter, StringComparison.OrdinalIgnoreCase));
-            sp.Visible = anyMatch;
-        }
     }
 
-    // ── Icon size propagation ───────────────────────────────────────────────
+    // ── Icon size ─────────────────────────────────────────────────────────────
 
     private void ApplyIconSize(int size)
     {
         _configService.Config.Window.IconSize = size;
         int w = SectionWidth();
-        foreach (var sp in _sectionPanels)
-        {
-            sp.ApplyIconSize(size);
-            sp.SetWidth(w);
-        }
+        foreach (var sp in _sectionPanels) { sp.ApplyIconSize(size); sp.SetWidth(w); }
         _configService.SaveConfig();
     }
 
-    // ── Exit ────────────────────────────────────────────────────────────────
+    // ── Exit ──────────────────────────────────────────────────────────────────
 
     private void ExitApp()
     {
@@ -626,12 +615,10 @@ public class MainForm : Form
         Application.Exit();
     }
 
-    // ── Cleanup ─────────────────────────────────────────────────────────────
+    // ── Cleanup ───────────────────────────────────────────────────────────────
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        // Intercept the close button (Alt+F4, taskbar close) and hide instead,
-        // unless we're doing a real exit via ExitApp().
         if (e.CloseReason == CloseReason.UserClosing)
         {
             e.Cancel = true;
@@ -644,24 +631,40 @@ public class MainForm : Form
         base.OnFormClosing(e);
     }
 
-    // ── Helpers ─────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private static Button MakeStripButton(string text, string tooltip)
+    private static Button MakeStripButton(string glyph, string tooltip)
     {
         var btn = new Button
         {
-            Text      = text,
+            Text      = glyph,
             Width     = 28,
-            Height    = 22,
+            Height    = 26,
             FlatStyle = FlatStyle.Flat,
-            BackColor = SystemColors.ControlDark,
+            BackColor = Color.Transparent,
             ForeColor = SystemColors.ControlText,
-            Font      = new Font(SystemFonts.DefaultFont.FontFamily, 8),
+            // Segoe MDL2 Assets renders the icon glyphs
+            Font      = TryFont("Segoe MDL2 Assets", 11f)
+                        ?? new Font(SystemFonts.DefaultFont.FontFamily, 9f),
             Margin    = new Padding(1),
             Padding   = Padding.Empty,
+            Cursor    = Cursors.Hand,
         };
-        btn.FlatAppearance.BorderSize = 0;
+        btn.FlatAppearance.BorderSize         = 0;
+        btn.FlatAppearance.MouseOverBackColor  = SystemColors.ButtonHighlight;
+        btn.FlatAppearance.MouseDownBackColor  = SystemColors.ButtonFace;
         new ToolTip().SetToolTip(btn, tooltip);
         return btn;
+    }
+
+    private static Font? TryFont(string name, float size)
+    {
+        try
+        {
+            var f = new Font(name, size);
+            // If GDI substituted a different family, the font isn't available
+            return f.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ? f : null;
+        }
+        catch { return null; }
     }
 }

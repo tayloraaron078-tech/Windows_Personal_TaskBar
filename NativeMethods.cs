@@ -9,6 +9,22 @@ namespace Personal_TaskBar;
 /// </summary>
 internal static class NativeMethods
 {
+    // ── Drag helpers ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Releases the mouse capture from a control so that SendMessage with
+    /// WM_NCLBUTTONDOWN can hand the drag loop over to the OS.
+    /// </summary>
+    [DllImport("user32.dll")]
+    public static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+
+    // WM_NCLBUTTONDOWN – tells DefWindowProc to begin a window move/size loop
+    public const int WM_NCLBUTTONDOWN = 0x00A1;
+    public const int HTCAPTION        = 2;
+
     // ── Hotkey registration ─────────────────────────────────────────────────
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -17,25 +33,24 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
-    // Modifier flags for RegisterHotKey
-    public const uint MOD_ALT     = 0x0001;
-    public const uint MOD_CONTROL = 0x0002;
-    public const uint MOD_SHIFT   = 0x0004;
-    public const uint MOD_WIN     = 0x0008;
+    public const uint MOD_ALT      = 0x0001;
+    public const uint MOD_CONTROL  = 0x0002;
+    public const uint MOD_SHIFT    = 0x0004;
+    public const uint MOD_WIN      = 0x0008;
     public const uint MOD_NOREPEAT = 0x4000;
 
-    // WM_HOTKEY message identifier
     public const int WM_HOTKEY = 0x0312;
 
     // ── Window management ───────────────────────────────────────────────────
 
     [DllImport("user32.dll")]
-    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+        int X, int Y, int cx, int cy, uint uFlags);
 
-    public static readonly IntPtr HWND_TOPMOST    = new(-1);
-    public static readonly IntPtr HWND_NOTOPMOST  = new(-2);
-    public const uint SWP_NOMOVE  = 0x0002;
-    public const uint SWP_NOSIZE  = 0x0001;
+    public static readonly IntPtr HWND_TOPMOST   = new(-1);
+    public static readonly IntPtr HWND_NOTOPMOST = new(-2);
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_NOSIZE = 0x0001;
 
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
@@ -43,6 +58,22 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    // ── DWM (Windows 11 visual chrome) ─────────────────────────────────────
+
+    [DllImport("dwmapi.dll", PreserveSig = false)]
+    public static extern void DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute,
+        ref int pvAttribute, int cbAttribute);
+
+    // DWMWA_WINDOW_CORNER_PREFERENCE – rounded corners on Windows 11
+    public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    public const int DWMWCP_DEFAULT    = 0;
+    public const int DWMWCP_ROUND      = 2;
+    public const int DWMWCP_ROUNDSMALL = 3;
+
+    // DWMWA_BORDER_COLOR – border accent colour (0xFFBBGGRR or DWMWA_COLOR_NONE)
+    public const int DWMWA_BORDER_COLOR = 34;
+    public const int DWMWA_COLOR_NONE   = unchecked((int)0xFFFFFFFE);
 
     // ── Icon extraction ─────────────────────────────────────────────────────
 
@@ -54,7 +85,6 @@ internal static class NativeMethods
 
     // ── Single-instance activation broadcast ───────────────────────────────
 
-    // Custom window message that the second instance sends to the first
     private const string ActivateMessageName = "Personal_TaskBar_Activate";
 
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
@@ -65,10 +95,6 @@ internal static class NativeMethods
 
     public static readonly uint WM_ACTIVATE_INSTANCE = RegisterWindowMessage(ActivateMessageName);
 
-    /// <summary>
-    /// Called by the second instance to signal the first to come to the foreground.
-    /// Uses HWND_BROADCAST so the first instance receives it regardless of its handle.
-    /// </summary>
     public static void BroadcastActivateMessage()
     {
         PostMessage(new IntPtr(0xFFFF), WM_ACTIVATE_INSTANCE, IntPtr.Zero, IntPtr.Zero);
@@ -92,9 +118,9 @@ internal static class NativeMethods
     public static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes,
         ref SHFILEINFO psfi, uint cbSizeFileInfo, uint uFlags);
 
-    public const uint SHGFI_ICON       = 0x000000100;
-    public const uint SHGFI_SMALLICON  = 0x000000001;
-    public const uint SHGFI_LARGEICON  = 0x000000000;
+    public const uint SHGFI_ICON              = 0x000000100;
+    public const uint SHGFI_SMALLICON         = 0x000000001;
+    public const uint SHGFI_LARGEICON         = 0x000000000;
     public const uint SHGFI_USEFILEATTRIBUTES = 0x000000010;
     public const uint FILE_ATTRIBUTE_NORMAL   = 0x00000080;
 }

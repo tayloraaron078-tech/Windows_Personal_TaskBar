@@ -20,9 +20,10 @@ public class SectionPanel : Panel
 
     // ── Dependencies ────────────────────────────────────────────────────────
 
-    private readonly ConfigService  _configService;
-    private readonly IconService    _iconService;
-    private readonly LaunchService  _launchService;
+    private readonly ConfigService          _configService;
+    private readonly IconService            _iconService;
+    private readonly LaunchService          _launchService;
+    private readonly Func<Form, DialogResult> _showDialog;
 
     // ── Child controls ──────────────────────────────────────────────────────
 
@@ -48,13 +49,16 @@ public class SectionPanel : Panel
     // ── Constructor ─────────────────────────────────────────────────────────
 
     public SectionPanel(Section section, ConfigService configService,
-                        IconService iconService, LaunchService launchService)
+                        IconService iconService, LaunchService launchService,
+                        Func<Form, DialogResult>? showDialogOverride = null)
     {
         SectionModel   = section;
         _configService = configService;
         _iconService   = iconService;
         _launchService = launchService;
         _collapsed     = section.Collapsed;
+        // Fall back to a plain ShowDialog if no override is provided (e.g. in tests)
+        _showDialog = showDialogOverride ?? (dlg => dlg.ShowDialog());
 
         BackColor    = SystemColors.Control;
         ForeColor    = SystemColors.ControlText;
@@ -275,7 +279,7 @@ public class SectionPanel : Panel
     {
         var newEntry = new Entry();
         using var dlg = new EditEntryForm(newEntry, isNew: true);
-        if (dlg.ShowDialog() == DialogResult.OK)
+        if (_showDialog(dlg) == DialogResult.OK)
         {
             SectionModel.Entries.Add(newEntry);
             _configService.SaveEntries();
@@ -287,7 +291,7 @@ public class SectionPanel : Panel
     private void OpenEditDialog(Entry entry, EntryButton btn)
     {
         using var dlg = new EditEntryForm(entry, isNew: false);
-        if (dlg.ShowDialog() == DialogResult.OK)
+        if (_showDialog(dlg) == DialogResult.OK)
         {
             _configService.SaveEntries();
             btn.Invalidate();
@@ -332,7 +336,7 @@ public class SectionPanel : Panel
         dlg.Controls.AddRange(new Control[] { ok, tb });
         dlg.AcceptButton = ok;
 
-        if (dlg.ShowDialog() == DialogResult.OK && !string.IsNullOrWhiteSpace(tb.Text))
+        if (_showDialog(dlg) == DialogResult.OK && !string.IsNullOrWhiteSpace(tb.Text))
         {
             SectionModel.Name   = tb.Text.Trim();
             _headerLabel.Text   = SectionModel.Name + (_collapsed ? " ▶" : " ▼");
@@ -343,7 +347,7 @@ public class SectionPanel : Panel
     private void ChangeAccentColor()
     {
         using var dlg = new ColorDialog { Color = TryParseColor(SectionModel.AccentColor) };
-        if (dlg.ShowDialog() == DialogResult.OK)
+        if (_showDialog(dlg) == DialogResult.OK)
         {
             SectionModel.AccentColor = ColorTranslator.ToHtml(dlg.Color);
             _configService.SaveEntries();

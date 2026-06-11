@@ -344,7 +344,7 @@ public class MainForm : Form
 
     private SectionPanel CreateSectionPanel(Section section)
     {
-        var panel = new SectionPanel(section, _configService, _iconService, _launchService);
+        var panel = new SectionPanel(section, _configService, _iconService, _launchService, ShowDialogSafe);
         panel.ApplyIconSize(_configService.Config.Window.IconSize);
 
         panel.CollapseAll            += (_, _) => CollapseAllSections();
@@ -375,7 +375,7 @@ public class MainForm : Form
         dlg.Controls.AddRange(new Control[] { ok, tb });
         dlg.AcceptButton = ok;
 
-        if (dlg.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(tb.Text))
+        if (ShowDialogSafe(dlg) != DialogResult.OK || string.IsNullOrWhiteSpace(tb.Text))
             return;
 
         var newSection = new Section { Name = tb.Text.Trim() };
@@ -403,6 +403,20 @@ public class MainForm : Form
             sp.SectionModel.Collapsed = false;
         _configService.SaveEntries();
         RebuildSections();
+    }
+
+    // ── Dialog helper (suspend TopMost so dialogs aren't hidden behind the bar) ──
+
+    /// <summary>
+    /// Shows a dialog while temporarily suspending TopMost so the dialog is not
+    /// covered by the always-on-top main window.  TopMost is restored afterwards.
+    /// </summary>
+    public DialogResult ShowDialogSafe(Form dlg)
+    {
+        bool wasTopMost = TopMost;
+        TopMost = false;
+        try     { return dlg.ShowDialog(this); }
+        finally { TopMost = wasTopMost; }
     }
 
     // ── Always-on-top toggle ─────────────────────────────────────────────────
@@ -437,7 +451,7 @@ public class MainForm : Form
         dlg.AlwaysOnTopChanged += (_, top) => { TopMost = top; };
         dlg.HotkeysChanged    += (_, _)    => RegisterHotkeys();
 
-        dlg.ShowDialog(this);
+        ShowDialogSafe(dlg);
     }
 
     // ── Search ──────────────────────────────────────────────────────────────
